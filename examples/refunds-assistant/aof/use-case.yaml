@@ -1,0 +1,14 @@
+title: "Refund investigation and preparation"
+business_outcome: "Cut median refund handling time from 18 minutes to 6, with no rise in wrong refunds"
+users: ["tier-1 support agents"]
+systems_touched: ["Orders API", "Payments API (refunds)", "Snowflake ANALYTICS.SUPPORT", "Ticketing"]
+actions:
+  read: ["look up order and shipment", "summarise refund history for a customer"]
+  write: ["create a refund request", "update ticket status"]
+cost_of_error: "A wrong refund costs the order value plus a reversal fee; the payments team catches it in daily reconciliation"
+errors_reversible: true
+requested_autonomy: L2
+triage:
+  accepted_by: platform-team
+  date: 2026-09-15
+  assigned_risk_tier: T3

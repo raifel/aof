@@ -1,0 +1,15 @@
+# Stage 1 - Intake. The app owner fills this in; the platform team adds `triage`.
+title: "{{app_title}} assistant"
+business_outcome: "TODO: the measurable outcome, e.g. cut time-to-answer for sales metrics from 2 days to minutes"
+users: ["TODO: who uses it, e.g. regional sales managers"]
+systems_touched: ["TODO: e.g. Snowflake ANALYTICS.SALES", "TODO: document store"]
+actions:
+  read: ["search internal documents", "answer questions over the sales metrics semantic view"]
+  write: []
+cost_of_error: "TODO: what a wrong answer costs and who catches it"
+errors_reversible: true
+requested_autonomy: L0
+# triage:                      # platform team only
+#   accepted_by: platform-team
+#   date: {{date}}
+#   assigned_risk_tier: T1

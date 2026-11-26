@@ -1,0 +1,34 @@
+# Stage 2 - Readiness. Any dimension at not_ready blocks the build until remediated.
+assessed_by: {{owner}}
+date: {{date}}
+dimensions:
+  capability_surface:
+    status: partial
+    evidence: []
+    notes: "Ready means: actions exist as documented, idempotent APIs with clear errors"
+    remediation: "Attach OpenAPI spec and name the API owner"
+  data:
+    status: partial
+    evidence: []
+    notes: "Ready means: a governed data product with owner, quality SLAs and a semantic definition"
+    remediation: "Link catalog entry and semantic view"
+  identity_access:
+    status: partial
+    evidence: []
+    notes: "Ready means: delegated (on-behalf-of) auth and fine-grained scopes"
+    remediation: "Document OAuth scopes and RBAC role map"
+  process_knowledge:
+    status: partial
+    evidence: []
+    notes: "Ready means: workflow, decision rules and exceptions are written down"
+    remediation: "Link SOP or runbook and sample cases"
+  risk:
+    status: partial
+    evidence: []
+    notes: "Ready means: impact of a wrong action is known and reversible, or a human approval step exists"
+    remediation: "Confirm risk tier and rollback procedure"
+  evaluation:
+    status: partial
+    evidence: []
+    notes: "Ready means: labelled examples exist, including edge cases (aim for 50-200)"
+    remediation: "Grow evals/golden.jsonl to 50+ cases"

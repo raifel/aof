@@ -1,0 +1,30 @@
+# AOF onboarding contract root. Schema: `aof schema`; checks: `aof validate`.
+aof_version: "0.1"
+
+app:
+  name: {{app_name}}
+  description: "TODO: one line on what the agent does for whom"
+  owner: {{owner}}
+  on_call: {{on_call}}
+  user_facing: true            # acts on behalf of the signed-in user (OAuth token exchange)
+
+risk_tier: T1                  # must match triage.assigned_risk_tier in the use-case card
+pattern: single_call_retrieval # simplest pattern first; see README "Pattern selection"
+# pattern_justification: required for single_agent / multi_agent
+
+autonomy:
+  current: L0                  # approved level; the gateway enforces this one
+  target: L0                   # level this onboarding requests
+
+hosts_agent: false             # true -> add agent-card.json (A2A)
+
+mcp_server:
+  path: src/server.py
+  command: ["python", "src/server.py"]
+  # managed: snowflake         # data-only apps: use a Snowflake-managed MCP server instead of path
+
+budgets: {}                    # optional; may only tighten the platform ceilings
+
+approvals: {}
+  # architecture_review: {by: "arch-review", date: 2026-01-01, ref: "ARCH-123"}
+  # review_board:        {by: "ai-review-board", date: 2026-01-01, ref: "AIRB-45"}

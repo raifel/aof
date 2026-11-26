@@ -1,0 +1,13 @@
+name: sales_documents
+owner: data-platform
+description: "Approved internal sales policy and process documents (search index)"
+source: "snowflake:KNOWLEDGE.DOCS.SALES_DOCS (Cortex Search service)"
+semantic_view: sales_documents
+freshness_sla: 7d
+classification: internal
+fields:
+  - {name: title, type: string}
+  - {name: body, type: string}
+  - {name: url, type: string}
+quality:
+  - "only documents with status=approved are indexed"

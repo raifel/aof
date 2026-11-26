@@ -1,0 +1,34 @@
+# Worked example: a T3 app moving from L1 (read-only workflow) to L2 (supervised agent).
+aof_version: "0.1"
+
+app:
+  name: refunds-assistant
+  description: "Helps support agents investigate orders and prepare refunds for human approval"
+  owner: payments-support
+  on_call: payments-support-oncall
+  user_facing: true
+
+risk_tier: T3
+pattern: single_agent
+pattern_justification: >-
+  Shadow-mode data shows 38% of refund cases need a data-dependent number of lookups
+  (order, shipment, prior refunds) before a decision, which a fixed chain could not cover
+  without a 40% escalation rate in the L1 workflow.
+
+autonomy:
+  current: L1
+  target: L2
+
+hosts_agent: false
+
+mcp_server:
+  path: src/server.py
+  command: ["python", "src/server.py"]
+
+budgets:
+  max_steps_per_run: 15
+  max_cost_usd_per_run: 0.50
+
+approvals:
+  architecture_review: {by: arch-review-board, date: 2026-10-02, ref: ARCH-412}
+  # review_board: required before promotion because the app is T3

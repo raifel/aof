@@ -1,0 +1,38 @@
+# Artefact 3 - Tool manifest. The policy compiler reads this; the gateway enforces it.
+# Descriptions here must match the server's tool descriptions (`aof check-server`).
+server: {{namespace}}/{{app_name}}
+version: 0.1.0
+tools:
+  - name: search_documents
+    description: >-
+      Search the team's approved internal documents and return the most relevant passages
+      with their titles and links. Use for policy, process and how-to questions.
+    example: 'search_documents(query="travel expense approval limits", limit=5)'
+    not_for: "Numeric questions about sales figures: use answer_metric_question."
+    access: read
+    risk_tier: T1
+    idempotent: true
+    scopes: ["{{app_name}}:documents:read"]
+    rate_limit: {calls: 60, per: minute}
+    approval: {mode: sampled, sample_rate: 0.05}
+    reads: ["sales_documents"]
+    params:
+      query: {type: string, description: "Natural-language search query"}
+      limit: {type: integer, description: "Max passages to return (1-10)", required: false}
+
+  - name: answer_metric_question
+    description: >-
+      Answer a question about sales metrics using the governed semantic view, returning the
+      figure, its definition, the period and the SQL that produced it.
+    example: 'answer_metric_question(question="Net revenue for EMEA in Q3 2026", period="quarter")'
+    not_for: "Free-text policy or process questions: use search_documents."
+    access: read
+    risk_tier: T1
+    idempotent: true
+    scopes: ["{{app_name}}:metrics:read"]
+    rate_limit: {calls: 30, per: minute}
+    approval: {mode: sampled, sample_rate: 0.05}
+    reads: ["sales_metrics"]
+    params:
+      question: {type: string, description: "The metric question in plain language"}
+      period: {type: string, description: "Reporting grain", enum: [day, week, month, quarter, year], required: false}

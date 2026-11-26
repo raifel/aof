@@ -1,0 +1,32 @@
+name: aof-contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install AOF
+        # Pin to the platform team's released version.
+        run: pip install 'aof[mcp]'
+      - name: Contract checks (build gate)
+        run: aof validate . --json > aof-report.json || (cat aof-report.json; exit 1)
+      - name: Server matches manifest
+        run: aof check-server .
+      - name: Compile gateway policy
+        run: aof compile-policy . -o gateway-policy.json
+      - name: Lifecycle status
+        run: aof status .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aof
+          path: |
+            aof-report.json
+            gateway-policy.json

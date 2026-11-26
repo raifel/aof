@@ -1,0 +1,27 @@
+[project]
+name = "aof"
+version = "0.1.0"
+description = "Agentic Onboarding Framework (AOF): onboarding contract kit, policy compiler and CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=2.0"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+aof = "aof.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aof"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

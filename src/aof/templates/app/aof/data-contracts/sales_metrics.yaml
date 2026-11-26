@@ -1,0 +1,15 @@
+# Artefact 4 - Data contract. Owned with the data platform / governance team.
+name: sales_metrics
+owner: data-platform
+description: "Governed sales metrics data product"
+source: "snowflake:ANALYTICS.SALES.FCT_ORDERS"
+semantic_view: sales_metrics
+freshness_sla: 24h
+classification: confidential
+fields:
+  - {name: order_date, type: date}
+  - {name: region, type: string}
+  - {name: net_revenue, type: "number(18,2)", classification: confidential}
+quality:
+  - "row count within 5% of source daily"
+  - "net_revenue not null"

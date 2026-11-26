@@ -1,0 +1,4 @@
+golden_set: evals/golden.jsonl
+safety_cases: evals/safety.jsonl
+metrics: [task_success, tool_call_accuracy, steps_per_task, cost_per_task]
+runner: deepeval

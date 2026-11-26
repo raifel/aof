@@ -1,0 +1,95 @@
+server: com.example/refunds-assistant
+version: 1.2.0
+tools:
+  - name: lookup_order
+    description: >-
+      Look up one order by its absolute order id and return status, items, amounts,
+      shipment events and payment method. Use before any refund decision.
+    example: 'lookup_order(order_id="ORD-2026-000184")'
+    not_for: "Past refunds for a customer: use summarize_refund_history."
+    access: read
+    risk_tier: T1
+    idempotent: true
+    scopes: ["orders:read"]
+    rate_limit: {calls: 60, per: minute}
+    approval: {mode: sampled, sample_rate: 0.05}
+    reads: ["order_facts"]
+    params:
+      order_id: {type: string, description: "Absolute order id, e.g. ORD-2026-000184"}
+
+  - name: summarize_refund_history
+    description: >-
+      Summarise a customer's refunds over the last 12 months: count, total amount and
+      reasons, so the agent can spot abuse or repeat issues.
+    example: 'summarize_refund_history(customer_id="CUS-88123")'
+    not_for: "Details of a single order: use lookup_order."
+    access: read
+    risk_tier: T1
+    idempotent: true
+    scopes: ["refunds:read"]
+    rate_limit: {calls: 30, per: minute}
+    approval: {mode: sampled, sample_rate: 0.05}
+    reads: ["refund_history"]
+    params:
+      customer_id: {type: string, description: "Absolute customer id, e.g. CUS-88123"}
+
+  - name: create_refund_request
+    description: >-
+      Create a refund request for an order. With dry_run=true it returns the exact refund
+      that would be created (amount, method, ledger entries) without creating it.
+    example: 'create_refund_request(order_id="ORD-2026-000184", amount=49.90, reason="damaged_in_transit", request_id="7f9c...", dry_run=true)'
+    not_for: "Checking what was refunded before: use summarize_refund_history."
+    access: write
+    risk_tier: T3
+    side_effects: ["creates a refund in the payments system", "emails the customer"]
+    idempotent: false
+    idempotency_key: request_id
+    scopes: ["refunds:create"]
+    rate_limit: {calls: 20, per: hour}
+    approval:
+      mode: per_action
+      approver_role: support-lead
+      limits: {max_amount: 200, currency: EUR}
+    reversibility: compensatable
+    supports_dry_run: true
+    reads: ["order_facts"]
+    params:
+      order_id: {type: string, description: "Absolute order id"}
+      amount: {type: number, description: "Refund amount in the order currency"}
+      reason: {type: string, description: "Refund reason code", enum: [damaged_in_transit, not_delivered, wrong_item, goodwill]}
+      request_id: {type: string, description: "Client-generated idempotency key (UUID)", format: uuid}
+      dry_run: {type: boolean, description: "Preview only; nothing is created", required: false}
+
+  - name: update_ticket_status
+    description: >-
+      Set the status of the support ticket linked to a refund case and add an internal note.
+      Customers do not see the note.
+    example: 'update_ticket_status(ticket_id="TCK-551203", status="pending_refund", note="Refund prepared, awaiting approval", dry_run=true)'
+    access: write
+    risk_tier: T2
+    side_effects: ["changes ticket status", "adds an internal note"]
+    idempotent: true
+    scopes: ["tickets:write"]
+    rate_limit: {calls: 60, per: hour}
+    approval:
+      mode: per_action          # L2: every write approved; limits below apply once at L3
+      limits: {max_per_hour: 60, scope: own_queue}
+    reversibility: reversible
+    supports_dry_run: true
+    params:
+      ticket_id: {type: string, description: "Absolute ticket id, e.g. TCK-551203"}
+      status: {type: string, description: "New ticket status", enum: [investigating, pending_refund, resolved]}
+      note: {type: string, description: "Internal note, max 500 chars"}
+      dry_run: {type: boolean, description: "Preview only; nothing is changed", required: false}
+
+  - name: delete_customer_account
+    description: >-
+      Listed so the gateway denies it explicitly: account deletion is never delegated to
+      an agent under the organisation's policy.
+    example: 'delete_customer_account(customer_id="CUS-88123")'
+    access: write
+    risk_tier: T4
+    scopes: ["accounts:delete"]
+    reversibility: irreversible
+    params:
+      customer_id: {type: string, description: "Absolute customer id"}

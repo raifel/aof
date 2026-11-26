@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/server.schema.json",
+  "name": "com.example/refunds-assistant",
+  "description": "Order lookup, refund history and refund preparation for support agents",
+  "version": "1.2.0",
+  "remotes": [{"type": "streamable-http", "url": "https://mcp.internal.example.com/refunds-assistant/mcp"}],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "aof": {"owner": "payments-support", "risk_tier": "T3", "autonomy_level": "L1", "on_call": "payments-support-oncall"}
+    }
+  }
+}

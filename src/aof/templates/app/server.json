@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/server.schema.json",
+  "name": "{{namespace}}/{{app_name}}",
+  "description": "{{app_title}} MCP server: governed document search and sales metrics",
+  "version": "0.1.0",
+  "remotes": [
+    {"type": "streamable-http", "url": "https://mcp.internal.example.com/{{app_name}}/mcp"}
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "aof": {
+        "owner": "{{owner}}",
+        "risk_tier": "T1",
+        "autonomy_level": "L0",
+        "on_call": "{{on_call}}"
+      }
+    }
+  }
+}

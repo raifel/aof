@@ -1,0 +1,12 @@
+name: refund_history
+owner: data-platform
+description: "Refunds by customer, last 24 months"
+source: "snowflake:ANALYTICS.SUPPORT.REFUNDS"
+semantic_view: refund_history
+freshness_sla: 1h
+classification: confidential
+fields:
+  - {name: customer_id, type: string, classification: confidential, pii: true}
+  - {name: refund_amount, type: "number(12,2)"}
+  - {name: reason, type: string}
+quality: ["reconciles with payments ledger daily"]

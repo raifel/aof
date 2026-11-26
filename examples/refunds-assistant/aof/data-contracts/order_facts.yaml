@@ -1,0 +1,13 @@
+name: order_facts
+owner: data-platform
+description: "Orders with items, amounts, shipment events and payment method"
+source: "snowflake:ANALYTICS.SUPPORT.ORDER_FACTS"
+semantic_view: order_facts
+freshness_sla: 15m
+classification: confidential
+fields:
+  - {name: order_id, type: string}
+  - {name: customer_id, type: string, classification: confidential, pii: true}
+  - {name: amount, type: "number(12,2)"}
+  - {name: shipment_events, type: variant}
+quality: ["order_id unique", "freshness <= 15m from Orders API CDC"]

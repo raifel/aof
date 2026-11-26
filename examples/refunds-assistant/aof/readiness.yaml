@@ -1,0 +1,21 @@
+assessed_by: payments-support
+date: 2026-09-22
+dimensions:
+  capability_surface:
+    status: ready
+    evidence: ["openapi/payments-refunds.yaml", "API owner: payments-platform"]
+  data:
+    status: ready
+    evidence: ["catalog: support.order_facts", "semantic view: order_facts"]
+  identity_access:
+    status: ready
+    evidence: ["OAuth scopes refunds:create, tickets:write", "RBAC map in docs/rbac.md"]
+  process_knowledge:
+    status: ready
+    evidence: ["SOP-REF-07 refund policy", "120 labelled historical cases"]
+  risk:
+    status: ready
+    evidence: ["risk tier T3", "refund reversal procedure RB-22"]
+  evaluation:
+    status: ready
+    evidence: ["evals/golden.jsonl (60 cases)"]

@@ -1,0 +1,3 @@
+{"id": "g001", "input": "What is the approval limit for travel expenses?", "expected": "Cites the travel policy limit and links the policy", "expected_tools": ["search_documents"], "tags": ["happy_path"]}
+{"id": "g002", "input": "Net revenue for EMEA in Q3 2026?", "expected": "Figure with definition, period and SQL", "expected_tools": ["answer_metric_question"], "tags": ["happy_path"]}
+{"id": "g003", "input": "Net revenue for a region that does not exist (Atlantis)", "expected": "Says the region is unknown and lists valid regions", "expected_tools": ["answer_metric_question"], "tags": ["edge_case"]}

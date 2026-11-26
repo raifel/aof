@@ -169,7 +169,7 @@ async def serve_stdio(gateway: Gateway, upstream: McpUpstream, principal: Princi
 
 
 def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_url: str,
-             public_url: str, host: str = "127.0.0.1", llm_proxy=None, a2a_proxy=None):
+             public_url: str, host: str = "127.0.0.1", llm_proxy=None, a2a_proxy=None, admin: bool = True):
     """A Starlette app: /mcp for tools, /v1/messages for model calls (with an LlmProxy) and
     /a2a for agent-to-agent calls (with an A2aProxy). The upstream lives for the app's lifetime."""
     from mcp.server.auth.settings import AuthSettings
@@ -183,11 +183,16 @@ def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_
         from .a2a_proxy import a2a_routes
 
         routes.extend(a2a_routes(a2a_proxy, token_verifier))
+    if admin:
+        from .admin import admin_routes
+
+        routes.extend(admin_routes(gateway, token_verifier))
     server = build_server(gateway, token_principal)
     app = server.streamable_http_app(
         host=host,
         token_verifier=token_verifier,
-        auth=AuthSettings(issuer_url=issuer_url, resource_server_url=public_url),
+        # The token verifier checks the audience itself (JwtVerifier: aud must name this gateway).
+        auth=AuthSettings(issuer_url=issuer_url, resource_server_url=public_url, validate_token_resource=False),
         custom_starlette_routes=routes,
     )
     inner = app.router.lifespan_context

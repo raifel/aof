@@ -106,17 +106,58 @@ aof compile-policy examples/refunds-assistant -o policy.json
 aof gateway serve --policy policy.json --user alice --scopes orders:read,refunds:read \
   --cwd examples/refunds-assistant -- python src/server.py
 
-# HTTP with bearer tokens (dev token file; use your IdP's TokenVerifier in production)
+# HTTP, development: unsigned tokens from a file (prints a DEV ONLY warning)
 aof gateway serve --transport http --port 8765 --policy policy.json --tokens tokens.json \
   --cwd examples/refunds-assistant -- python src/server.py
 
-# operate it (works against a running gateway: state is shared through --state-dir)
-aof gateway approvals
+# HTTP, production: JWTs signed by the IdP in platform.yaml identity.issuer
+aof gateway serve --transport http --policy policy.json \
+  --public-url https://gw.example.com/mcp --upstream-url https://refunds.internal/mcp
+
+# operate it, production: the /admin API with an operator token from the IdP
+export AOF_OPERATOR_TOKEN=...
+aof gateway approvals --gateway-url https://gw.example.com
+aof gateway approve apr_1234 --gateway-url https://gw.example.com
+aof gateway kill agent:refunds-assistant --reason "cost spike" --gateway-url https://gw.example.com
+
+# operate it, development: edit --state-dir directly; --by/--roles are not verified
 aof gateway approve apr_1234 --by bob --roles support-lead
-aof gateway kill agent:refunds-assistant --by ops --reason "cost spike"
 aof gateway demote agent:refunds-assistant --to L1 --by ops --reason "incident 42"
 aof gateway audit --verify
 ```
+
+### Identity
+
+In HTTP mode every route (`/mcp`, `/v1/messages`, `/a2a`, `/admin`) needs a bearer
+token. In production these are JWT access tokens from the IdP set in `platform.yaml`
+(`identity.issuer`). A token is accepted only when all of these hold:
+
+- its signature verifies against a key from the IdP's JWKS. The keys are found through
+  OIDC or RFC 8414 discovery, and the metadata must name the same issuer.
+- it uses an allow-listed asymmetric algorithm. `none` and HS* are refused, both at
+  startup and by policy (`AOF-P062`).
+- `iss` matches, `aud` names this gateway (`--audience`, default `--public-url`), and
+  `exp`/`nbf` are valid within `leeway_seconds`.
+- it has a `sub`.
+
+Keys are refetched when a token names an unknown `kid` (key rotation), at most once every
+30 seconds. Claims map to the principal:
+- scopes from `scope` or `scp`;
+- roles from `identity.roles_claim` (a dotted path, e.g. `realm_access.roles`);
+- tenant from `identity.tenant_claim`;
+- the calling client or agent from `client_id` or `azp`.
+
+The gateway won't start in HTTP mode without an issuer unless `--tokens` is given, and
+then it prints that it is running DEV ONLY.
+
+Operators use `/admin` (or the CLI with `--gateway-url`). The decider is the token's
+subject, so it is never claimed:
+- approving or rejecting needs the tool's approver role from the token;
+- the kill switch, demote, restore and revive need `identity.operator_role`;
+- nobody can decide their own request.
+
+Every admin action, including refusals, is audited with `verified: true`. Local-mode CLI
+actions are audited with `verified: false`.
 
 Callers can set `_meta["aof/run_id"]` (budgets are counted per run; the default is the
 MCP session) and `_meta["aof/delegation_depth"]` for A2A hops.
@@ -242,9 +283,9 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
   (no `private_key_jwt` or mTLS), sends no RFC 8693 `actor_token`, and doesn't bind tokens
   with DPoP. Each upstream call opens a new MCP connection, which costs one extra round
   trip.
-- **Production identity.** `StaticTokenVerifier` is for development only. Plug in a JWT
-  verifier for your IdP. Operator commands take `--by`/`--roles` on trust; put them
-  behind SSO.
+- **Identity limits.** JWT access tokens only: no opaque tokens (RFC 7662
+  introspection), no revocation check before `exp`, and no sender-constrained tokens
+  (DPoP or mTLS). `/admin` has no UI of its own; build approval screens on top of it.
 - **Multi-replica state.** State is a locked JSON file for one host. Swap `DurableStore`
   for Redis or a database. Rate and budget counters are per process.
 - **Other platform pieces.** The runtime/orchestrator, the internal MCP registry service,

@@ -138,6 +138,16 @@ def check_policy(project: Project, manifest: ToolManifest, platform: PlatformCon
 
     out.extend(_check_llm(project, platform))
     out.extend(_check_a2a(project))
+    ident = platform.identity
+    for name in ("issuer", "jwks_uri"):
+        url = getattr(ident, name)
+        if url and not url.startswith("https://"):
+            out.append(error("AOF-P061", "platform.yaml", f"identity.{name} must be https",
+                             "token signing keys must come from an authenticated source"))
+    weak = [a for a in ident.algorithms if a.lower() == "none" or a.upper().startswith("HS")]
+    if weak:
+        out.append(error("AOF-P062", "platform.yaml", f"identity.algorithms must be asymmetric; remove {weak}",
+                         "HS* with a public key (JWKS) enables key-confusion forgery"))
     endpoint = platform.identity.token_endpoint
     if project.app.user_facing and endpoint and not endpoint.startswith("https://"):
         out.append(error("AOF-P060", "platform.yaml", "identity.token_endpoint must be https",
@@ -298,6 +308,13 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             "token_exchange": platform.identity.token_exchange if project.app.user_facing else None,
             "token_endpoint": platform.identity.token_endpoint if project.app.user_facing else None,
             "audience": project.mcp_server.audience,
+            "issuer": platform.identity.issuer,
+            "jwks_uri": platform.identity.jwks_uri,
+            "algorithms": platform.identity.algorithms,
+            "roles_claim": platform.identity.roles_claim,
+            "tenant_claim": platform.identity.tenant_claim,
+            "leeway_seconds": platform.identity.leeway_seconds,
+            "operator_role": platform.identity.operator_role,
             "scope_ttl_seconds": platform.identity.scope_ttl_seconds,
             "shared_service_account": False,
             "credentials_in_context": False,

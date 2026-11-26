@@ -18,6 +18,14 @@ identity:
   scope_ttl_seconds: 900               # short-lived, per-tool scopes
   token_exchange: "urn:ietf:params:oauth:grant-type:token-exchange"
   token_endpoint: null                 # the IdP's RFC 8693 token endpoint (https); set per deployment
+  # Verifying callers' tokens (JWT access tokens signed by the IdP). Set per deployment.
+  issuer: null                         # e.g. https://idp.example.com/realms/agents (https)
+  jwks_uri: null                       # default: discovered from the issuer's metadata
+  algorithms: [RS256, PS256, ES256, EdDSA]   # asymmetric only; HS* and none are refused
+  roles_claim: roles                   # dotted path, e.g. realm_access.roles (Keycloak)
+  tenant_claim: tenant
+  leeway_seconds: 60                   # clock skew allowed on exp / nbf / iat
+  operator_role: aof-operator          # may use the kill switch and demote via the admin API
 
 telemetry:
   # OTel GenAI semantic conventions are still in Development status:

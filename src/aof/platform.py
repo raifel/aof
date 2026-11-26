@@ -27,6 +27,13 @@ class IdentityCfg(Strict):
     scope_ttl_seconds: PositiveInt
     token_exchange: str
     token_endpoint: str | None = None
+    issuer: str | None = None
+    jwks_uri: str | None = None
+    algorithms: list[str] = ["RS256", "PS256", "ES256", "EdDSA"]
+    roles_claim: str = "roles"
+    tenant_claim: str | None = "tenant"
+    leeway_seconds: int = Field(default=60, ge=0, le=300)
+    operator_role: str = "aof-operator"
 
 
 class TelemetryCfg(Strict):

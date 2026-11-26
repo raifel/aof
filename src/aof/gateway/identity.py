@@ -2,7 +2,7 @@
 
 User-facing agents act on behalf of the signed-in user, so every decision is made
 against the user's scopes, never a shared service account. In production the
-principal comes from a verified OAuth token (token exchange at the IdP). The
+principal comes from a JWT verified by `jwt_verifier.JwtVerifier`. The
 StaticTokenVerifier below is for local development only.
 """
 
@@ -46,7 +46,7 @@ class StaticTokenVerifier:
 
     {"<token>": {"subject": "alice", "scopes": ["orders:read"], "roles": ["support-lead"]}}
 
-    Replace with a JWT verifier for your IdP (signature, issuer, audience, expiry).
+    Production uses jwt_verifier.JwtVerifier (signature, issuer, audience, expiry).
     """
 
     def __init__(self, path: str | Path):

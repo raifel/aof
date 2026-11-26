@@ -1,8 +1,10 @@
 """`aof gateway ...`: run the gateway and operate it.
 
-Operator commands (approve, kill, demote) assert the operator's identity with --by
-and --roles. That is fine for local use; in production put them behind SSO (an
-approval UI or an admin API) so the identity is verified, not claimed.
+Operator commands (approvals, approve, kill, demote, ...) run in one of two modes:
+  --gateway-url URL   production: call the gateway's /admin API with an operator token
+                      (env AOF_OPERATOR_TOKEN); the identity comes from the verified token.
+  local (default)     development: edit --state-dir directly; --by/--roles are claimed,
+                      not verified.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from ..enums import AutonomyLevel
 from .approvals import ApprovalError, ApprovalService
@@ -76,6 +79,37 @@ def _obo_broker(args, policy):
     return OboBroker(exchanger, audience=ident.audience or args.upstream_url, resource=args.upstream_url)
 
 
+def _verifier(args, policy, public_url: str):
+    """(token verifier, issuer URL), or (None, None) after printing why."""
+    ident = policy.identity
+    if args.tokens:
+        print("DEV ONLY: tokens come from a static file and are not signed. Use the IdP "
+              "(platform.yaml identity.issuer or --issuer-url) in production.", file=sys.stderr)
+        from .identity import StaticTokenVerifier
+
+        return StaticTokenVerifier(args.tokens), args.issuer_url or ident.issuer or "http://127.0.0.1:9000"
+    issuer = args.issuer_url or ident.issuer
+    if not issuer:
+        print("http mode needs an IdP to verify tokens: set platform.yaml identity.issuer (or --issuer-url), "
+              "or pass --tokens for local development", file=sys.stderr)
+        return None, None
+    from .jwt_verifier import IdentityConfigError, JwtVerifier
+
+    if not issuer.startswith("https://") and not args.allow_insecure_idp:
+        print("the issuer must be https", file=sys.stderr)
+        return None, None
+    audiences = args.audience or [public_url]
+    try:
+        verifier = JwtVerifier(issuer, audiences, jwks_uri=ident.jwks_uri, algorithms=ident.algorithms,
+                               roles_claim=ident.roles_claim, tenant_claim=ident.tenant_claim,
+                               leeway=ident.leeway_seconds)
+    except IdentityConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return None, None
+    print(f"identity: JWTs from {issuer} for audience {', '.join(audiences)}", file=sys.stderr)
+    return verifier, issuer
+
+
 def cmd_serve(args) -> int:
     try:
         from .mcp_proxy import McpUpstream, http_app, serve_stdio
@@ -109,12 +143,11 @@ def cmd_serve(args) -> int:
         asyncio.run(serve_stdio(gateway, upstream, principal))
         return 0
 
-    if not args.tokens:
-        print("http mode needs --tokens (dev) or code that passes your IdP's TokenVerifier", file=sys.stderr)
+    public_url = args.public_url or f"http://{args.host}:{args.port}/mcp"
+    verifier, issuer = _verifier(args, policy, public_url)
+    if verifier is None:
         return 2
     import uvicorn
-
-    from .identity import StaticTokenVerifier
 
     llm_proxy = None
     if policy.llm is not None and not args.no_llm:
@@ -136,9 +169,8 @@ def cmd_serve(args) -> int:
         if not a2a.enabled:
             print(f"a2a configured but the agent is at {policy.agent.autonomy_level.value}: "
                   "every A2A call will be denied until it reaches L4", file=sys.stderr)
-    public_url = args.public_url or f"http://{args.host}:{args.port}/mcp"
-    app = http_app(gateway, upstream, StaticTokenVerifier(args.tokens), issuer_url=args.issuer_url,
-                   public_url=public_url, host=args.host, llm_proxy=llm_proxy, a2a_proxy=a2a_proxy)
+    app = http_app(gateway, upstream, verifier, issuer_url=issuer, public_url=public_url, host=args.host,
+                   llm_proxy=llm_proxy, a2a_proxy=a2a_proxy, admin=not args.no_admin)
     if a2a_proxy:
         print(f"agent-to-agent: POST http://{args.host}:{args.port}/a2a/peers/<peer> "
               f"(peers: {', '.join(p.name for p in a2a.peers) or '-'}); inbound POST /a2a"
@@ -150,23 +182,87 @@ def cmd_serve(args) -> int:
     return 0
 
 
-def cmd_approvals(args) -> int:
-    _, _, approvals = _state(args)
-    items = approvals.list(None if args.status == "all" else args.status)
+def _admin_client(base_url: str):
+    import httpx2
+
+    return httpx2.AsyncClient(base_url=base_url, timeout=30.0)
+
+
+def _remote(args, method: str, path: str, body: dict | None = None) -> tuple[int, Any]:
+    import os
+
+    token = os.environ.get(args.token_env)
+    if not token:
+        print(f"set {args.token_env} to an operator access token from the IdP", file=sys.stderr)
+        return 2, None
+
+    async def go():
+        async with _admin_client(args.gateway_url) as client:
+            res = await client.request(method, path, json=body, headers={"authorization": f"Bearer {token}"})
+            try:
+                return res.status_code, res.json()
+            except ValueError:
+                return res.status_code, {"error": f"HTTP_{res.status_code}", "reason": res.text[:200]}
+
+    return asyncio.run(go())
+
+
+def _remote_failed(status: int, data: Any) -> int | None:
+    if status == 2 and data is None:
+        return 2
+    if status >= 400:
+        print(f"{data.get('error')}: {data.get('reason')}", file=sys.stderr)
+        return 1
+    return None
+
+
+def _local(args) -> bool:
+    """Local mode needs --by; say that it is not verified."""
+    if not getattr(args, "by", None):
+        print("give --gateway-url (production) or --by (local development)", file=sys.stderr)
+        return False
+    print("local mode: --by/--roles are claimed, not verified. Use --gateway-url in production.",
+          file=sys.stderr)
+    return True
+
+
+def _print_approvals(items: list[dict], args) -> None:
     if args.json:
-        print(json.dumps([a.__dict__ for a in items], indent=2, default=str))
-        return 0
+        print(json.dumps(items, indent=2, default=str))
+        return
     if not items:
         print(f"No {args.status} approvals.")
     for a in items:
-        print(f"{a.id}  {a.status:9} {a.tool}  user={a.user_id}  agent={a.agent_id}  "
-              f"role={a.approver_role or '-'}  created={_ts(a.created_at)}  expires={_ts(a.expires_at)}")
-        print(f"    args:    {json.dumps(a.args, default=str)}")
-        print(f"    preview: {json.dumps(a.preview, default=str)}")
+        print(f"{a['id']}  {a['status']:9} {a['tool']}  user={a['user_id']}  agent={a['agent_id']}  "
+              f"role={a['approver_role'] or '-'}  created={_ts(a['created_at'])}  expires={_ts(a['expires_at'])}")
+        print(f"    args:    {json.dumps(a['args'], default=str)}")
+        print(f"    preview: {json.dumps(a['preview'], default=str)}")
+
+
+def cmd_approvals(args) -> int:
+    if args.gateway_url:
+        status, data = _remote(args, "GET", f"/admin/approvals?status={args.status}")
+        failed = _remote_failed(status, data)
+        if failed is not None:
+            return failed
+        _print_approvals(data, args)
+        return 0
+    _, _, approvals = _state(args)
+    _print_approvals([dict(a.__dict__) for a in approvals.list(None if args.status == "all" else args.status)], args)
     return 0
 
 
 def _decide(args, approve: bool) -> int:
+    verb = "approve" if approve else "reject"
+    if args.gateway_url:
+        status, data = _remote(args, "POST", f"/admin/approvals/{args.approval_id}/{verb}", {"note": args.note})
+        failed = _remote_failed(status, data)
+        if failed is not None:
+            return failed
+        print(f"{data['id']} {data['status']} by {data['decided_by']}")
+        return 0
+    if not _local(args):
+        return 2
     _, audit, approvals = _state(args)
     approver = Principal.of(args.by, roles=_csv(args.roles))
     try:
@@ -175,46 +271,72 @@ def _decide(args, approve: bool) -> int:
         print(f"{exc.code}: {exc}", file=sys.stderr)
         return 1
     audit.append("approval_decided", approval_id=a.id, agent=a.agent_id, tool=a.tool, user=a.user_id,
-                 decision=a.status, decided_by=args.by)
+                 decision=a.status, decided_by=args.by, verified=False)
     print(f"{a.id} {a.status} by {args.by}")
     return 0
 
 
-def cmd_kill(args) -> int:
+def _operator(args, path: str, body: dict, local, done: str) -> int:
+    if args.gateway_url:
+        status, data = _remote(args, "POST", path, {"agent": args.agent, **body})
+        failed = _remote_failed(status, data)
+        if failed is not None:
+            return failed
+        print(done)
+        return 0
+    if not _local(args):
+        return 2
     state, audit, _ = _state(args)
-    state.kill(args.agent, by=args.by, reason=args.reason)
-    audit.append("kill_switch_on", agent=args.agent, by=args.by, reason=args.reason)
-    print(f"{args.agent} disabled. Every call is now denied.")
-    return 0
+    return local(state, audit)
+
+
+def cmd_kill(args) -> int:
+    def local(state, audit):
+        state.kill(args.agent, by=args.by, reason=args.reason)
+        audit.append("kill_switch_on", agent=args.agent, by=args.by, reason=args.reason, verified=False)
+        print(f"{args.agent} disabled. Every call is now denied.")
+        return 0
+
+    return _operator(args, "/admin/kill", {"reason": args.reason}, local,
+                     f"{args.agent} disabled. Every call is now denied.")
 
 
 def cmd_revive(args) -> int:
-    state, audit, _ = _state(args)
-    if not state.revive(args.agent):
-        print(f"{args.agent} was not disabled.")
-        return 1
-    audit.append("kill_switch_off", agent=args.agent, by=args.by)
-    print(f"{args.agent} re-enabled at its current approved level.")
-    return 0
+    def local(state, audit):
+        if not state.revive(args.agent):
+            print(f"{args.agent} was not disabled.")
+            return 1
+        audit.append("kill_switch_off", agent=args.agent, by=args.by, verified=False)
+        print(f"{args.agent} re-enabled at its current approved level.")
+        return 0
+
+    return _operator(args, "/admin/revive", {}, local, f"{args.agent} re-enabled at its current approved level.")
 
 
 def cmd_demote(args) -> int:
-    state, audit, _ = _state(args)
     level = AutonomyLevel(args.to)
-    state.demote(args.agent, level, by=args.by, reason=args.reason)
-    audit.append("autonomy_demoted", agent=args.agent, to_level=level.value, by=args.by, reason=args.reason)
-    print(f"{args.agent} capped at {level.value}.")
-    return 0
+
+    def local(state, audit):
+        state.demote(args.agent, level, by=args.by, reason=args.reason)
+        audit.append("autonomy_demoted", agent=args.agent, to_level=level.value, by=args.by, reason=args.reason,
+                     verified=False)
+        print(f"{args.agent} capped at {level.value}.")
+        return 0
+
+    return _operator(args, "/admin/demote", {"to": level.value, "reason": args.reason}, local,
+                     f"{args.agent} capped at {level.value}.")
 
 
 def cmd_restore(args) -> int:
-    state, audit, _ = _state(args)
-    if not state.clear_demotion(args.agent):
-        print(f"{args.agent} has no demotion.")
-        return 1
-    audit.append("autonomy_restored", agent=args.agent, by=args.by)
-    print(f"{args.agent} restored to its compiled level.")
-    return 0
+    def local(state, audit):
+        if not state.clear_demotion(args.agent):
+            print(f"{args.agent} has no demotion.")
+            return 1
+        audit.append("autonomy_restored", agent=args.agent, by=args.by, verified=False)
+        print(f"{args.agent} restored to its compiled level.")
+        return 0
+
+    return _operator(args, "/admin/restore", {}, local, f"{args.agent} restored to its compiled level.")
 
 
 def cmd_audit(args) -> int:
@@ -237,6 +359,12 @@ def register(sub: argparse._SubParsersAction) -> None:
         p.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help="durable state + audit log")
         return p
 
+    def operator(p):
+        with_state(p)
+        p.add_argument("--gateway-url", help="production: the gateway's base URL (uses its /admin API)")
+        p.add_argument("--token-env", default="AOF_OPERATOR_TOKEN", help="env var with the operator's token")
+        return p
+
     s = with_state(gs.add_parser("serve", help="serve an app's MCP server through the gateway"))
     s.add_argument("--policy", required=True, help="compiled gateway-policy.json")
     s.add_argument("--transport", choices=["stdio", "http"], default="stdio")
@@ -248,7 +376,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--tokens", help="http: DEV token file for StaticTokenVerifier")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--issuer-url", default="http://127.0.0.1:9000", help="http: OAuth issuer")
+    s.add_argument("--issuer-url", help="http: the IdP issuer (default: platform.yaml identity.issuer)")
+    s.add_argument("--audience", action="append", help="http: token audience(s) accepted (default: --public-url)")
+    s.add_argument("--no-admin", action="store_true", help="http: do not serve the /admin operator API")
     s.add_argument("--public-url", help="http: this gateway's public /mcp URL")
     s.add_argument("--no-auto-demote", action="store_true")
     s.add_argument("--no-llm", action="store_true", help="http: do not serve /v1/messages")
@@ -264,40 +394,40 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- <app server command>")
     s.set_defaults(fn=cmd_serve)
 
-    s = with_state(gs.add_parser("approvals", help="list approval requests"))
+    s = operator(gs.add_parser("approvals", help="list approval requests"))
     s.add_argument("--status", default="pending", choices=["pending", "approved", "rejected", "consumed", "all"])
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_approvals)
 
     for name, approve in (("approve", True), ("reject", False)):
-        s = with_state(gs.add_parser(name, help=f"{name} one approval request"))
+        s = operator(gs.add_parser(name, help=f"{name} one approval request"))
         s.add_argument("approval_id")
-        s.add_argument("--by", required=True)
-        s.add_argument("--roles", help="comma-separated roles of the approver")
+        s.add_argument("--by", help="local mode: who decides (not verified)")
+        s.add_argument("--roles", help="local mode: comma-separated roles of the approver (not verified)")
         s.add_argument("--note")
         s.set_defaults(fn=lambda a, _approve=approve: _decide(a, _approve))
 
-    s = with_state(gs.add_parser("kill", help="kill switch: deny every call from an agent"))
+    s = operator(gs.add_parser("kill", help="kill switch: deny every call from an agent"))
     s.add_argument("agent")
-    s.add_argument("--by", required=True)
+    s.add_argument("--by", help="local mode: who (not verified)")
     s.add_argument("--reason", required=True)
     s.set_defaults(fn=cmd_kill)
 
-    s = with_state(gs.add_parser("revive", help="turn the kill switch off"))
+    s = operator(gs.add_parser("revive", help="turn the kill switch off"))
     s.add_argument("agent")
-    s.add_argument("--by", required=True)
+    s.add_argument("--by", help="local mode: who (not verified)")
     s.set_defaults(fn=cmd_revive)
 
-    s = with_state(gs.add_parser("demote", help="cap an agent's autonomy level"))
+    s = operator(gs.add_parser("demote", help="cap an agent's autonomy level"))
     s.add_argument("agent")
     s.add_argument("--to", required=True, choices=[lvl.value for lvl in AutonomyLevel])
-    s.add_argument("--by", required=True)
+    s.add_argument("--by", help="local mode: who (not verified)")
     s.add_argument("--reason", required=True)
     s.set_defaults(fn=cmd_demote)
 
-    s = with_state(gs.add_parser("restore", help="remove a demotion"))
+    s = operator(gs.add_parser("restore", help="remove a demotion"))
     s.add_argument("agent")
-    s.add_argument("--by", required=True)
+    s.add_argument("--by", help="local mode: who (not verified)")
     s.set_defaults(fn=cmd_restore)
 
     s = with_state(gs.add_parser("audit", help="show or verify the audit log"))

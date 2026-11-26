@@ -18,5 +18,6 @@ uv venv && uv pip install --python .venv/bin/python -e '.[dev,gateway]'
 - Gateway: keep `engine.py` free of I/O and transport code; MCP specifics belong in `mcp_proxy.py`, Claude API specifics in `llm.py` (official `anthropic` SDK only, behind the `LlmProvider` protocol).
 - A2A specifics belong in `a2a_proxy.py`. It forwards JSON-RPC payloads unchanged; the a2a-sdk is a test dependency only (end-to-end tests in `tests/test_gateway_a2a.py`).
 - Upstream credentials: token exchange lives in `obo.py`. Exchange only after the policy allows a call, fail closed (never fall back to the gateway's own connection when exchange was configured), and never log a token.
+- Identity: `jwt_verifier.py` is the production `TokenVerifier`; `StaticTokenVerifier` is dev only. Never accept symmetric (HS*) or `none` algorithms. Operator actions in production go through `admin.py`, with the decider taken from the verified token, never from a request field.
 - Model prices live in `platform.yaml` under `llm.pricing_usd_per_mtok`. Tests never call the real API: use `FakeProvider` or the in-process fake Messages API in `tests/test_gateway_llm.py`.
 - Every gateway decision must be written to the audit log, and a denial must return a stable `error` code the model can act on.

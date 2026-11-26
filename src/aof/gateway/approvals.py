@@ -93,11 +93,10 @@ class ApprovalService:
                 raise ApprovalError("APPROVAL_NOT_PENDING", f"approval is {a.status}")
             if now > a.expires_at:
                 raise ApprovalError("APPROVAL_EXPIRED", "approval request expired")
-            if a.approver_role:
-                if a.approver_role not in approver.roles:
-                    raise ApprovalError("APPROVER_ROLE", f"approver needs role {a.approver_role}")
-                if approver.user_id == a.user_id:
-                    raise ApprovalError("SELF_APPROVAL", "the requesting user cannot approve their own action")
+            if a.approver_role and a.approver_role not in approver.roles:
+                raise ApprovalError("APPROVER_ROLE", f"approver needs role {a.approver_role}")
+            if approver.user_id == a.user_id:
+                raise ApprovalError("SELF_APPROVAL", "the requesting user cannot decide their own action")
             a.status, a.decided_by, a.decided_at, a.note = status, approver.user_id, now, note
             a.history.append({"status": status, "by": approver.user_id, "at": now})
             d["approvals"][a.id] = asdict(a)

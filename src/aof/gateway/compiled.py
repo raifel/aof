@@ -109,6 +109,13 @@ class IdentityRule(_M):
     token_endpoint: str | None = None
     audience: str | None = None
     scope_ttl_seconds: int = 900
+    issuer: str | None = None
+    jwks_uri: str | None = None
+    algorithms: list[str] = ["RS256", "PS256", "ES256", "EdDSA"]
+    roles_claim: str = "roles"
+    tenant_claim: str | None = "tenant"
+    leeway_seconds: int = 60
+    operator_role: str = "aof-operator"
 
 
 class CompiledPolicy(_M):

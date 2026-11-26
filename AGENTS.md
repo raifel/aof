@@ -22,3 +22,5 @@ uv venv && uv pip install --python .venv/bin/python -e '.[dev,gateway]'
 - State: everything shared goes through the `Store` protocol in `state.py` (memory, file, Redis). A check that guards a limit must be atomic in the store (`window_acquire`, `RunState.reserve`, `Store.update`), never a read followed by a later write. Race tests in `tests/test_gateway_replicas.py` run against fakeredis.
 - Model prices live in `platform.yaml` under `llm.pricing_usd_per_mtok`. Tests never call the real API: use `FakeProvider` or the in-process fake Messages API in `tests/test_gateway_llm.py`.
 - Every gateway decision must be written to the audit log, and a denial must return a stable `error` code the model can act on.
+- Evals: `evalrun.py` scores from the gateway's audit log and run state, never from the agent's own claims. Tests use the scripted model in `tests/test_evalrun.py`; `aof eval` asks before a billed run.
+- Live tests (`tests/live`, marker `live`) are excluded from the default run and skip without their env variables. Never run the billed ones without the user's say-so.

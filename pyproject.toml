@@ -26,3 +26,5 @@ packages = ["src/aof"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = ["live: talks to real services (Redis, an IdP, the Claude API); see tests/live/README.md"]

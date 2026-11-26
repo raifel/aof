@@ -16,7 +16,7 @@ from pathlib import Path
 from . import __version__
 from .checks import validate
 from .conformance import check_server
-from .enums import Stage
+from .enums import AutonomyLevel, Stage
 from .findings import Finding, Report
 from .gates import GATE_NAMES, run_gate, status
 from .loader import load_project
@@ -154,6 +154,80 @@ def cmd_check_server(args: argparse.Namespace) -> int:
     return _print_findings(check_server(lp.manifest, command, lp.root), args.json)
 
 
+def _load_agent(spec: str):
+    """module:attribute -> an Agent instance (call the attribute if it is a class or factory)."""
+    import importlib
+
+    module, _, attr = spec.partition(":")
+    obj = getattr(importlib.import_module(module), attr or "agent")
+    return obj() if callable(obj) and not hasattr(obj, "run") else obj
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from .evalrun import ClaudeAgent, run_suite, write_outputs
+
+    lp = load_project(args.dir)
+    if lp.project is None or lp.manifest is None or lp.eval_suite is None:
+        return _print_findings(lp.load_findings, False) or 1
+    platform = load_platform(args.platform)
+    n = len(lp.golden_cases) + len(lp.safety_cases)
+    n = min(n, args.limit) if args.limit else n
+    if not args.yes:
+        prompt = f"Run {n} eval cases against the Claude API through the gateway? This is billed. [y/N] "
+        if not sys.stdin.isatty():
+            print("this run calls the Claude API (billed): pass --yes to confirm", file=sys.stderr)
+            return 2
+        if input(prompt).strip().lower() not in ("y", "yes"):
+            return 2
+    try:
+        from .gateway.llm import AnthropicProvider
+        from .gateway.mcp_proxy import McpUpstream
+    except ImportError:
+        print("aof eval needs the gateway extra: pip install 'aof[gateway]'", file=sys.stderr)
+        return 2
+    command = args.command or lp.project.mcp_server.command
+    if args.upstream_url:
+        upstream = McpUpstream(args.upstream_url)
+    elif command:
+        upstream = McpUpstream.stdio(command, cwd=str(lp.root))
+    else:
+        print("no app server: set mcp_server.command in aof.yaml, pass --upstream-url, or -- <command>",
+              file=sys.stderr)
+        return 2
+    agent = None
+    if args.agent:
+        agent = _load_agent(args.agent)
+    elif args.system_prompt:
+        agent = ClaudeAgent(Path(args.system_prompt).read_text())
+
+    def progress(i, total, out):
+        mark = "PASS" if out.passed else "FAIL"
+        extra = f"  {out.error}" if out.error else ""
+        print(f"[{i:>3}/{total}] {mark}  {out.kind:6} {out.id:8} steps={out.steps} "
+              f"cost=${out.cost_usd:.4f}{extra}", file=sys.stderr)
+
+    level = AutonomyLevel(args.level) if args.level else None
+    try:
+        run = asyncio.run(run_suite(lp, platform, upstream, AnthropicProvider(), agent=agent, level=level,
+                                    judge=False if args.no_judge else None, approvals=args.approvals,
+                                    limit=args.limit, progress=progress))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    results_path = Path(args.output) if args.output else lp.root / lp.project.artefacts.eval_results
+    report = Path(args.report) if args.report else results_path.with_name("report.jsonl")
+    write_outputs(run, results_path, report)
+    r = run.results
+    print(f"task_success {r['task_success']:.3f}  tool_call_accuracy {r['tool_call_accuracy']:.3f}  "
+          f"safety_pass_rate {r['safety_pass_rate']:.3f}  cost/task ${r['cost_per_task_usd']:.4f}  "
+          f"steps/task {r['steps_per_task']:.1f}  errors {r['errors']}  judged {r['judged']} "
+          f"(judge ${r['judge_cost_usd']:.4f})" + (f"  UNGRADED {r['ungraded']}" if r["ungraded"] else ""))
+    print(f"Wrote {results_path} and {report}. Next: aof gate evaluate {args.dir}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aof", description="Agentic Onboarding Framework CLI")
     p.add_argument("--version", action="version", version=f"aof {__version__}")
@@ -201,6 +275,24 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.add_argument("command", nargs=argparse.REMAINDER, help="-- <server command>")
     s.set_defaults(fn=cmd_check_server)
+
+    s = sub.add_parser("eval", help="run the golden and safety cases through the gateway (calls the Claude API)")
+    s.add_argument("dir", nargs="?", default=".")
+    s.add_argument("--limit", type=int, help="run only the first N cases")
+    s.add_argument("--level", choices=[lv.value for lv in AutonomyLevel],
+                   help="autonomy level to evaluate at (default: the target)")
+    s.add_argument("--approvals", choices=["propose", "approve"], default="propose",
+                   help="propose: an approval request ends that write; approve: approve it synthetically")
+    s.add_argument("--agent", help="module:attr of your own agent (implements aof.evalrun.Agent)")
+    s.add_argument("--system-prompt", help="file with the reference agent's system prompt")
+    s.add_argument("--upstream-url", help="the app's MCP server URL (default: mcp_server.command)")
+    s.add_argument("-o", "--output", help="results file (default: artefacts.eval_results)")
+    s.add_argument("--report", help="per-case JSONL report (default: report.jsonl next to the results)")
+    s.add_argument("--no-judge", action="store_true",
+                   help="do not grade prose expectations with Claude (they count as failed)")
+    s.add_argument("--yes", action="store_true", help="confirm the billed run without asking")
+    s.add_argument("command", nargs=argparse.REMAINDER, help="-- <app server command>")
+    s.set_defaults(fn=cmd_eval)
 
     from .gateway.cli import register as register_gateway
 

@@ -281,6 +281,50 @@ cancel or continue tasks it started, and `ListTasks` is filtered), and the peer 
 contracted skills. Denials are JSON-RPC errors with `data.error` set to the AOF code.
 The audit log records method, peer or caller, and task ids, never message content.
 
+## Running the evals (`aof eval`)
+
+`aof eval` writes `evals/results.json` for the evaluate gate. It runs every golden and
+safety case through the gateway against the app's real MCP server, so policy, budgets,
+approvals and spend are real, and it scores from what the gateway recorded, not from
+what the agent claims.
+
+```bash
+export ANTHROPIC_API_KEY=...
+aof eval examples/refunds-assistant --limit 5   # asks first: this is billed
+aof eval examples/refunds-assistant --yes       # all 70 cases
+aof gate evaluate examples/refunds-assistant
+```
+
+- **Agent.** By default a reference Claude tool loop through the gateway's LLM proxy,
+  using the app's `llm.models`. It answers with a JSON verdict
+  (`status`, `result`, `summary`). Plug in your own with `--agent module:attr`
+  (implements `aof.evalrun.Agent`), or change the prompt with `--system-prompt`.
+- **Level.** Cases run at the target autonomy level (`--level` to change). At L2 an
+  approval request ends that write and the case is judged on the proposal; with
+  `--approvals approve` the runner approves each one so the agent can finish.
+- **Scores.** `task_success` compares `result` with `expected` (numbers within 1%,
+  strings case-insensitive, only the keys in `expected`). Prose expectations are graded
+  by a Claude judge that sees the gateway's record; its spend is reported separately
+  (`judge_cost_usd`); `--no-judge` leaves them ungraded and failed. `tool_call_accuracy`
+  is the overlap of `expected_tools` with the tools called. `safety_pass_rate` checks
+  `refuse`, `block`, `no_write` and `ask_approval` against refusals, gateway denials,
+  approvals and executed writes. Cost and steps come from the gateway's run state.
+- **Output.** `results.json` (with the level, models and error count) and a per-case
+  `report.jsonl` next to it.
+
+The pilot gate reads `evals/pilot.json`. During a supervised L2 pilot every proposed
+write goes to a human, so the gateway's audit logs already hold the answer:
+
+```bash
+aof gateway pilot-report agent:refunds-assistant --since 2026-11-03 -o evals/pilot.json
+```
+
+It counts proposals, the share a human approved (`agreement_rate`) and incidents (kill
+switch or demotion) across every replica's audit log.
+
+Live smoke tests against real Redis, a real IdP and the Claude API are in `tests/live`.
+They never run with plain `pytest`; see `tests/live/README.md`.
+
 ## Layout
 
 ```
@@ -293,6 +337,7 @@ src/aof/
   conformance.py live MCP server vs manifest (needs the `mcp` extra, SDK v2)
   platform.yaml  platform-owned thresholds and budgets
   templates/app  `aof init` scaffold: a read-only L0/T1 lighthouse app
+  evalrun.py     `aof eval`: cases through the gateway, scored from its record
   gateway/
     engine.py      per-call decision (pure)       approvals.py  one approval per action
     core.py        Gateway.call_tool orchestration audit.py      hash-chained audit log
@@ -323,8 +368,12 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
   trip per check. On-behalf-of tokens and peer agent cards are cached per replica, by
   design: bearer tokens are not copied into shared storage. Audit chains are per replica,
   not one global chain.
-- **Other platform pieces.** The runtime/orchestrator, the internal MCP registry service,
-  the eval runner and the AgentOps dashboards.
+- **Eval limits.** Cases run one at a time. The reference agent is a plain tool loop, not
+  your production agent: plug yours in with `--agent` for scores that mean something.
+  The prose judge is one Claude call per case with no calibration set. Pilot agreement
+  is approved/decided at L2; shadow mode with no human in the loop isn't scored.
+- **Other platform pieces.** The runtime/orchestrator, the internal MCP registry service
+  and the AgentOps dashboards.
 
 Open decisions carried over from the design:
 

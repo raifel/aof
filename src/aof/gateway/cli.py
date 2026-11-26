@@ -370,6 +370,40 @@ def cmd_audit(args) -> int:
     return 0
 
 
+INCIDENT_EVENTS = ("kill_switch_on", "autonomy_demoted")
+
+
+def cmd_pilot_report(args) -> int:
+    """Pilot results from the audit logs of a supervised (L2) pilot: every write the agent
+    proposed went to a human, so approved / decided is the agreement rate."""
+    start = dt.date.fromisoformat(args.since)
+    end = dt.date.fromisoformat(args.until) if args.until else dt.date.today()
+    lo = dt.datetime.combine(start, dt.time.min).timestamp()
+    hi = dt.datetime.combine(end, dt.time.max).timestamp()
+    records = [r for f in sorted(Path(args.state_dir).glob("audit*.jsonl")) for r in AuditLog(f).read()
+               if lo <= r.get("ts", 0) <= hi and r.get("agent") == args.agent]
+    proposals = sum(1 for r in records if r["event"] == "approval_requested")
+    decided = [r for r in records if r["event"] == "approval_decided"]
+    approved = sum(1 for r in decided if r.get("decision") == "approved")
+    incidents = sum(1 for r in records if r["event"] in INCIDENT_EVENTS)
+    if not decided:
+        print(f"no human decisions for {args.agent} between {start} and {end}: nothing to report",
+              file=sys.stderr)
+        return 1
+    report = {
+        "window_start": start.isoformat(), "window_end": end.isoformat(), "proposals": proposals,
+        "agreement_rate": round(approved / len(decided), 4), "incidents": incidents,
+        "decided": len(decided), "approved": approved, "source": "aof gateway audit logs",
+    }
+    text = json.dumps(report, indent=2) + "\n"
+    if args.output:
+        Path(args.output).write_text(text)
+        print(f"Wrote {args.output}")
+    else:
+        print(text, end="")
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     g = sub.add_parser("gateway", help="run and operate the agent gateway")
     gs = g.add_subparsers(dest="gateway_cmd", required=True)
@@ -453,6 +487,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("agent")
     s.add_argument("--by", help="local mode: who (not verified)")
     s.set_defaults(fn=cmd_restore)
+
+    s = with_state(gs.add_parser("pilot-report", help="write pilot results (agreement, incidents) from the audit logs"))
+    s.add_argument("agent", help="agent id, e.g. agent:refunds-assistant")
+    s.add_argument("--since", required=True, help="first day of the pilot window (YYYY-MM-DD)")
+    s.add_argument("--until", help="last day (default: today)")
+    s.add_argument("-o", "--output", help="e.g. evals/pilot.json (default: print)")
+    s.set_defaults(fn=cmd_pilot_report)
 
     s = with_state(gs.add_parser("audit", help="show or verify the audit log"))
     s.add_argument("--verify", action="store_true")

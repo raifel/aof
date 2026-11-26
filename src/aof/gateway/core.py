@@ -17,6 +17,7 @@ from .audit import AuditLog, args_digest
 from .compiled import CompiledPolicy
 from .engine import Action, PolicyEngine, Verdict, effective_decision, effective_level
 from .identity import Principal
+from .obo import OboBroker, TokenExchangeError
 from .state import GatewayState
 from .telemetry import tool_span
 
@@ -36,9 +37,12 @@ class UpstreamTool:
 
 
 class Upstream(Protocol):
-    async def list_tools(self) -> list[UpstreamTool]: ...
+    """The app's tool server. With on-behalf-of exchange the gateway passes `token=`, the
+    exchanged per-user access token; without it the upstream uses its own connection."""
 
-    async def call_tool(self, name: str, args: dict[str, Any]) -> ToolResult: ...
+    async def list_tools(self, **kw: Any) -> list[UpstreamTool]: ...
+
+    async def call_tool(self, name: str, args: dict[str, Any], **kw: Any) -> ToolResult: ...
 
 
 def _deny_payload(v: Verdict) -> dict[str, Any]:
@@ -51,7 +55,7 @@ def _deny_payload(v: Verdict) -> dict[str, Any]:
 class Gateway:
     def __init__(self, policy: CompiledPolicy, upstream: Upstream, *, state: GatewayState | None = None,
                  audit: AuditLog | None = None, approvals: ApprovalService | None = None,
-                 auto_demote: bool = True, clock=time.time):
+                 auto_demote: bool = True, clock=time.time, obo: OboBroker | None = None):
         self.policy = policy
         self.upstream = upstream
         self.state = state or GatewayState()
@@ -60,6 +64,7 @@ class Gateway:
         self.engine = PolicyEngine(policy, self.state)
         self.auto_demote = auto_demote
         self.clock = clock
+        self.obo = obo  # on-behalf-of token exchange towards the upstream app
 
     @property
     def agent_id(self) -> str:
@@ -72,8 +77,14 @@ class Gateway:
         if self.state.killed(self.agent_id):
             return []
         level = effective_level(self.policy, self.state)
+        try:
+            kw, _ = await self._credential(principal, ())
+        except TokenExchangeError as exc:
+            self.audit.append("token_exchange_failed", agent=self.agent_id, user=principal.user_id,
+                              operation="list_tools", code=exc.code, reason=str(exc))
+            return []
         out = []
-        for t in await self.upstream.list_tools():
+        for t in await self.upstream.list_tools(**kw):
             rule = self.policy.rule(t.name)
             if rule is None:
                 continue  # served but not in policy: hidden and denied
@@ -145,7 +156,11 @@ class Gateway:
         rule = verdict.rule
         preview = None
         if rule.dry_run_preview:
-            dry = await self.upstream.call_tool(tool, {**args, "dry_run": True})
+            try:
+                kw, _ = await self._credential(principal, rule.scopes)
+            except TokenExchangeError as exc:
+                return self._exchange_failed(exc, base, span)
+            dry = await self.upstream.call_tool(tool, {**args, "dry_run": True}, **kw)
             if dry.is_error:
                 self.audit.append("dry_run_failed", **base)
                 return ToolResult({"error": "DRY_RUN_FAILED", "reason": "the preview failed; fix the call first",
@@ -169,6 +184,10 @@ class Gateway:
 
     async def _execute(self, principal, tool, args, verdict, base, span, now, *,
                        approved_by: str | None = None, approval_id: str | None = None) -> ToolResult:
+        try:
+            kw, credential = await self._credential(principal, verdict.rule.scopes)
+        except TokenExchangeError as exc:
+            return self._exchange_failed(exc, base, span)
         key = (self.agent_id, principal.user_id, tool)
         self.state.calls.add(key, now)
         if verdict.rule.access == "write" and verdict.code != "DRY_RUN":
@@ -176,7 +195,7 @@ class Gateway:
         if approval_id and verdict.rule.dry_run_preview:
             args = {**args, "dry_run": False}  # the approved action itself, not another preview
         try:
-            result = await self.upstream.call_tool(tool, args)
+            result = await self.upstream.call_tool(tool, args, **kw)
         except Exception as exc:  # noqa: BLE001 - upstream failure is reported, never raised to the agent
             span.set_error("UPSTREAM_ERROR")
             self.audit.append("tool_failed", **base, code="UPSTREAM_ERROR", reason=str(exc))
@@ -185,8 +204,21 @@ class Gateway:
         if result.is_error:
             span.set_error("TOOL_ERROR")
         self.audit.append("tool_executed", **base, code=verdict.code, upstream_error=result.is_error,
-                          sampled_for_review=verdict.sampled, approval_id=approval_id, approved_by=approved_by)
+                          sampled_for_review=verdict.sampled, approval_id=approval_id, approved_by=approved_by,
+                          on_behalf_of=credential)
         return result
+
+    async def _credential(self, principal: Principal, scopes) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Upstream call kwargs and an audit summary. Raises TokenExchangeError."""
+        if self.obo is None:
+            return {}, None
+        token = await self.obo.for_upstream(principal, scopes)
+        return {"token": token.access_token}, token.audit()
+
+    def _exchange_failed(self, exc: TokenExchangeError, base: dict[str, Any], span) -> ToolResult:
+        span.set_error(exc.code)
+        self.audit.append("token_exchange_failed", **base, code=exc.code, reason=str(exc))
+        return ToolResult({"error": exc.code, "reason": str(exc)}, is_error=True)
 
     # ------------------------------------------------------------------ budgets, SLOs
 

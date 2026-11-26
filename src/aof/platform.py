@@ -26,6 +26,7 @@ class BudgetsCfg(Strict):
 class IdentityCfg(Strict):
     scope_ttl_seconds: PositiveInt
     token_exchange: str
+    token_endpoint: str | None = None
 
 
 class TelemetryCfg(Strict):

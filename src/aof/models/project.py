@@ -33,6 +33,7 @@ class McpServerRef(Strict):
     path: str | None = None
     command: list[str] | None = None  # how to launch it over stdio for conformance checks
     managed: str | None = None  # e.g. "snowflake" for a Snowflake-managed MCP server
+    audience: str | None = None  # token audience the app's server expects; default: its URL
 
     @model_validator(mode="after")
     def _one_of(self) -> "McpServerRef":
@@ -86,6 +87,8 @@ class A2aPeer(Strict):
     card_url: str  # the peer's agent card, normally https://host/.well-known/agent-card.json
     skills: list[str] = Field(min_length=1)  # skills the peer's card must keep advertising
     credential_env: str | None = None  # env var holding the gateway's token for this peer
+    audience: str | None = None  # on-behalf-of token audience; default: the peer's endpoint
+    scopes: list[str] = []  # scopes requested in the on-behalf-of token for this peer
 
 
 class A2aConfig(Strict):

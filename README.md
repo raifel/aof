@@ -121,6 +121,37 @@ aof gateway audit --verify
 Callers can set `_meta["aof/run_id"]` (budgets are counted per run; the default is the
 MCP session) and `_meta["aof/delegation_depth"]` for A2A hops.
 
+### On-behalf-of credentials (token exchange)
+
+For a user-facing app the gateway never forwards the user's token and never calls the
+app as a shared service account. After policy allows a call, it exchanges the user's
+bearer token at the IdP (OAuth 2.0 Token Exchange, RFC 8693) for a new token that is
+bound to the app's audience, carries only that tool's manifest scopes, and is used for at
+most `identity.scope_ttl_seconds`. Each call then opens its own connection to the app with
+that token, so connections are never shared between users.
+
+```bash
+export AOF_GATEWAY_CLIENT_SECRET=...      # the gateway's own OAuth client at the IdP
+aof gateway serve --transport http --policy policy.json --tokens tokens.json \
+  --upstream-url https://refunds.internal/mcp \
+  --token-endpoint https://idp.example.com/oauth2/token   # or platform.yaml identity.token_endpoint
+```
+
+- The audience is `mcp_server.audience` in `aof.yaml`, defaulting to the upstream URL,
+  which is also sent as the RFC 8707 `resource`.
+- If the IdP grants scopes that weren't asked for (`OBO_SCOPE_WIDENED`), or withholds ones
+  the user may not delegate (`OBO_SCOPE_DENIED`), the call is refused. A missing user
+  token (`NO_SUBJECT_TOKEN`) or a failed exchange is also a refusal, never a fallback to
+  the gateway's own connection.
+- Denied calls never reach the IdP. Exchanged tokens are cached per user token, audience
+  and scopes until 30 seconds before they expire. The audit log records audience, scopes
+  and lifetime, never a token.
+- A2A peers without a `credential_env` get an exchanged token for their endpoint (or
+  `audience`) with the peer's `scopes`.
+- On-behalf-of needs the HTTP gateway and a URL upstream. Under stdio, or with no token
+  endpoint configured, the gateway prints that exchange is OFF and uses its own
+  connection. `--no-obo` makes that explicit.
+
 ### Model calls (`POST /v1/messages`)
 
 When the app's `aof.yaml` has an `llm:` block, the HTTP gateway also serves the
@@ -207,8 +238,10 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
   overshoot the cost cap. Long-context and regional price premiums are not modelled;
   check `platform.yaml` prices against the pricing page. No `count_tokens` or batches
   endpoints. The model-call rate limit is per process.
-- **On-behalf-of token exchange to the upstream app.** The gateway checks the user's
-  scopes, but it calls the app over its own connection.
+- **On-behalf-of limits.** The gateway authenticates to the IdP with a client secret only
+  (no `private_key_jwt` or mTLS), sends no RFC 8693 `actor_token`, and doesn't bind tokens
+  with DPoP. Each upstream call opens a new MCP connection, which costs one extra round
+  trip.
 - **Production identity.** `StaticTokenVerifier` is for development only. Plug in a JWT
   verifier for your IdP. Operator commands take `--by`/`--roles` on trust; put them
   behind SSO.

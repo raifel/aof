@@ -19,10 +19,14 @@ class Principal:
     scopes: frozenset[str] = field(default_factory=frozenset)
     roles: frozenset[str] = field(default_factory=frozenset)
     tenant: str | None = None
+    # The caller's verified bearer token: the subject token for on-behalf-of exchange.
+    # Never logged, compared or serialised.
+    token: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def of(cls, user_id: str, scopes=(), roles=(), tenant: str | None = None) -> "Principal":
-        return cls(user_id, frozenset(scopes), frozenset(roles), tenant)
+    def of(cls, user_id: str, scopes=(), roles=(), tenant: str | None = None,
+           token: str | None = None) -> "Principal":
+        return cls(user_id, frozenset(scopes), frozenset(roles), tenant, token)
 
 
 def principal_from_access_token(token) -> Principal:
@@ -33,6 +37,7 @@ def principal_from_access_token(token) -> Principal:
         scopes=token.scopes,
         roles=claims.get("roles", []),
         tenant=claims.get("tenant"),
+        token=token.token,
     )
 
 

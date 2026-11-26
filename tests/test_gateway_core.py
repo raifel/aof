@@ -45,14 +45,17 @@ def make_policy(level: str = "L2", **budget_overrides) -> CompiledPolicy:
 class FakeUpstream:
     def __init__(self, policy: CompiledPolicy):
         self.calls: list[tuple[str, dict]] = []
+        self.tokens: list[str | None] = []
         self.names = [t.name for t in policy.tools if t.risk_tier.value != "T4"] + ["export_everything"]
 
-    async def list_tools(self):
+    async def list_tools(self, token=None):
+        self.tokens.append(token)
         return [UpstreamTool(n, f"{n} tool", {"type": "object", "properties": {"x": {"type": "string"}}})
                 for n in self.names]
 
-    async def call_tool(self, name, args):
+    async def call_tool(self, name, args, token=None):
         self.calls.append((name, dict(args)))
+        self.tokens.append(token)
         if args.get("dry_run"):
             return ToolResult({"dry_run": True, "would": name, "args": args})
         return ToolResult({"ok": True, "tool": name})

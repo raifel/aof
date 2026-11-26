@@ -335,6 +335,15 @@ class A2aProxy:
                 return self._deny(call, base, A2aDenied("PEER_CREDENTIAL_MISSING",
                                                         f"{peer.credential_env} is not set on the gateway"), now)
             headers["authorization"] = f"Bearer {token}"
+        elif gw.obo is not None:
+            from .obo import TokenExchangeError
+
+            try:
+                obo = await gw.obo.for_audience(call.principal, peer.audience or card.endpoint(), peer.scopes)
+            except TokenExchangeError as exc:
+                return self._deny(call, base, A2aDenied(exc.code, str(exc)), now)
+            headers["authorization"] = f"Bearer {obo.access_token}"
+            base = {**base, "on_behalf_of": obo.audit()}
         if call.method in NEW_WORK and _requested_task(call.method, call.params) is None:
             run.delegations += 1
         return await self._forward(card.endpoint(), call, headers, base, scope, owner)

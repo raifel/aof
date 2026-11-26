@@ -44,6 +44,38 @@ def _ts(t: float | None) -> str:
     return dt.datetime.fromtimestamp(t).isoformat(timespec="seconds") if t else "-"
 
 
+def _obo_broker(args, policy):
+    """The on-behalf-of broker, None when the gateway uses its own connection, or 2 on a
+    configuration error."""
+    ident = policy.identity
+    endpoint = args.token_endpoint or ident.token_endpoint
+    if ident.mode != "on_behalf_of" or args.no_obo:
+        return None
+    reason = None
+    if not endpoint:
+        reason = "no token endpoint (platform.yaml identity.token_endpoint or --token-endpoint)"
+    elif args.transport != "http":
+        reason = "stdio has no user token to exchange"
+    elif not args.upstream_url:
+        reason = "the app server is a stdio command; give --upstream-url"
+    if reason:
+        print(f"on-behalf-of exchange is OFF: {reason}. The gateway calls the app with its own "
+              "connection; do not run user-facing apps like this in production.", file=sys.stderr)
+        return None
+    if not endpoint.startswith("https://") and not args.allow_insecure_idp:
+        print("--token-endpoint must be https (user tokens are sent to it)", file=sys.stderr)
+        return 2
+    import os
+
+    from .obo import OboBroker, TokenExchanger
+
+    exchanger = TokenExchanger(endpoint, args.client_id or policy.agent.id,
+                               os.environ.get(args.client_secret_env), max_ttl=ident.scope_ttl_seconds)
+    print(f"on-behalf-of: exchanging user tokens at {endpoint} for audience "
+          f"{ident.audience or args.upstream_url}", file=sys.stderr)
+    return OboBroker(exchanger, audience=ident.audience or args.upstream_url, resource=args.upstream_url)
+
+
 def cmd_serve(args) -> int:
     try:
         from .mcp_proxy import McpUpstream, http_app, serve_stdio
@@ -53,17 +85,21 @@ def cmd_serve(args) -> int:
     policy = load_policy(args.policy)
     state, audit, approvals = _state(args)
     command = args.upstream[1:] if args.upstream[:1] == ["--"] else args.upstream
-    if args.upstream_url:
-        upstream = McpUpstream(args.upstream_url)
-    elif command:
-        upstream = McpUpstream.stdio(command, cwd=args.cwd)
-    else:
+    if not args.upstream_url and not command:
         print("give the app server: --upstream-url URL or -- <command>", file=sys.stderr)
         return 2
+    obo = _obo_broker(args, policy)
+    if obo == 2:
+        return 2
+    if args.upstream_url:
+        upstream = McpUpstream(args.upstream_url, per_user=obo is not None)
+    else:
+        upstream = McpUpstream.stdio(command, cwd=args.cwd)
     gateway = Gateway(policy, upstream, state=state, audit=audit, approvals=approvals,
-                      auto_demote=not args.no_auto_demote)
+                      auto_demote=not args.no_auto_demote, obo=obo)
     audit.append("gateway_started", agent=policy.agent.id, transport=args.transport,
-                 autonomy_level=policy.agent.autonomy_level.value)
+                 autonomy_level=policy.agent.autonomy_level.value,
+                 upstream_credential="on_behalf_of" if obo else "gateway_connection")
 
     if args.transport == "stdio":
         if not args.user:
@@ -217,6 +253,13 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--no-auto-demote", action="store_true")
     s.add_argument("--no-llm", action="store_true", help="http: do not serve /v1/messages")
     s.add_argument("--no-a2a", action="store_true", help="http: do not serve the A2A routes")
+    s.add_argument("--token-endpoint", help="http: IdP token endpoint for on-behalf-of exchange "
+                   "(default: from the policy)")
+    s.add_argument("--client-id", help="the gateway's OAuth client id at the IdP (default: the agent id)")
+    s.add_argument("--client-secret-env", default="AOF_GATEWAY_CLIENT_SECRET",
+                   help="env var holding the gateway's OAuth client secret")
+    s.add_argument("--no-obo", action="store_true", help="call the app with the gateway's own connection")
+    s.add_argument("--allow-insecure-idp", action="store_true", help=argparse.SUPPRESS)  # local IdP stubs
     s.add_argument("--a2a-upstream-url", help="http: the app's own A2A JSON-RPC endpoint (inbound calls)")
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- <app server command>")
     s.set_defaults(fn=cmd_serve)

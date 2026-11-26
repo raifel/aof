@@ -7,9 +7,10 @@ Per-call context comes from the request `_meta`:
   aof/run_id            groups calls into one agent run (budgets); defaults to the session
   aof/delegation_depth  A2A hop count, set by the orchestrator
 
-Not built here: OAuth token exchange towards the upstream app. The gateway calls the
-upstream with its own connection; add an on-behalf-of token per call when the IdP
-supports it.
+Credentials towards the app: with on-behalf-of exchange (see obo.py) every call opens
+its own connection to the app's server carrying the exchanged, per-user, per-tool
+token, so no connection is ever shared between users. Without it the gateway uses one
+connection of its own. On-behalf-of needs a URL (streamable HTTP) upstream.
 """
 
 from __future__ import annotations
@@ -42,19 +43,33 @@ def _payload(result: types.CallToolResult) -> Any:
 
 
 class McpUpstream:
-    """The app's MCP server: a URL (streamable HTTP), a stdio command, or an in-process server."""
+    """The app's MCP server: a URL (streamable HTTP), a stdio command, or an in-process server.
 
-    def __init__(self, target: Any):
+    per_user=True (on-behalf-of): no shared connection is opened; each call connects with the
+    token it is given. `http_client_factory(headers)` builds the HTTP client for that
+    connection (override it for mTLS or tests).
+    """
+
+    def __init__(self, target: Any, *, per_user: bool = False, http_client_factory=None):
+        if per_user and not isinstance(target, str):
+            raise ValueError("on-behalf-of credentials need a URL (streamable HTTP) upstream")
         self._target = target
         self._client: Client | None = None
+        self.per_user = per_user
+        self._http_client_factory = http_client_factory
+
+    @property
+    def url(self) -> str | None:
+        return self._target if isinstance(self._target, str) else None
 
     @classmethod
     def stdio(cls, command: list[str], cwd: str | None = None) -> "McpUpstream":
         return cls(StdioServerParameters(command=command[0], args=command[1:], cwd=cwd))
 
     async def __aenter__(self) -> "McpUpstream":
-        self._client = Client(self._target)
-        await self._client.__aenter__()
+        if not self.per_user:
+            self._client = Client(self._target)
+            await self._client.__aenter__()
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -62,12 +77,31 @@ class McpUpstream:
             await self._client.__aexit__(*exc)
             self._client = None
 
-    async def list_tools(self) -> list[UpstreamTool]:
-        res = await self._client.list_tools()
+    @contextlib.asynccontextmanager
+    async def _session(self, token: str | None):
+        if token is None:
+            if self._client is None:
+                raise RuntimeError("no user token for a per-user upstream")
+            yield self._client
+            return
+        if self.url is None:
+            raise RuntimeError("on-behalf-of tokens need a URL upstream")
+        import httpx2
+        from mcp.client.streamable_http import streamable_http_client
+
+        headers = {"authorization": f"Bearer {token}"}
+        factory = self._http_client_factory or (lambda h: httpx2.AsyncClient(headers=h, timeout=30.0))
+        async with factory(headers) as http, Client(streamable_http_client(self.url, http_client=http)) as client:
+            yield client
+
+    async def list_tools(self, token: str | None = None) -> list[UpstreamTool]:
+        async with self._session(token) as client:
+            res = await client.list_tools()
         return [UpstreamTool(t.name, t.description or "", t.input_schema, t.annotations) for t in res.tools]
 
-    async def call_tool(self, name: str, args: dict[str, Any]) -> ToolResult:
-        res = await self._client.call_tool(name, args)
+    async def call_tool(self, name: str, args: dict[str, Any], token: str | None = None) -> ToolResult:
+        async with self._session(token) as client:
+            res = await client.call_tool(name, args)
         return ToolResult(_payload(res), bool(res.is_error))
 
 

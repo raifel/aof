@@ -138,6 +138,10 @@ def check_policy(project: Project, manifest: ToolManifest, platform: PlatformCon
 
     out.extend(_check_llm(project, platform))
     out.extend(_check_a2a(project))
+    endpoint = platform.identity.token_endpoint
+    if project.app.user_facing and endpoint and not endpoint.startswith("https://"):
+        out.append(error("AOF-P060", "platform.yaml", "identity.token_endpoint must be https",
+                         "user tokens are sent to it"))
 
     if platform.telemetry.genai_semconv_version == "PIN_ME":
         out.append(warning("AOF-P030", "platform.yaml",
@@ -292,6 +296,8 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
         "identity": {
             "mode": "on_behalf_of" if project.app.user_facing else "workload",
             "token_exchange": platform.identity.token_exchange if project.app.user_facing else None,
+            "token_endpoint": platform.identity.token_endpoint if project.app.user_facing else None,
+            "audience": project.mcp_server.audience,
             "scope_ttl_seconds": platform.identity.scope_ttl_seconds,
             "shared_service_account": False,
             "credentials_in_context": False,

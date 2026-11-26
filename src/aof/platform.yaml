@@ -17,6 +17,7 @@ budgets:                               # platform-wide ceilings; apps may only t
 identity:
   scope_ttl_seconds: 900               # short-lived, per-tool scopes
   token_exchange: "urn:ietf:params:oauth:grant-type:token-exchange"
+  token_endpoint: null                 # the IdP's RFC 8693 token endpoint (https); set per deployment
 
 telemetry:
   # OTel GenAI semantic conventions are still in Development status:

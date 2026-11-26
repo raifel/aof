@@ -87,6 +87,8 @@ class A2aPeerRule(_M):
     card_url: str
     skills: list[str]
     credential_env: str | None = None
+    audience: str | None = None
+    scopes: list[str] = []
 
 
 class A2aRule(_M):
@@ -101,6 +103,14 @@ class A2aRule(_M):
         return next((p for p in self.peers if p.name == name), None)
 
 
+class IdentityRule(_M):
+    mode: Literal["on_behalf_of", "workload"] = "workload"
+    token_exchange: str | None = None
+    token_endpoint: str | None = None
+    audience: str | None = None
+    scope_ttl_seconds: int = 900
+
+
 class CompiledPolicy(_M):
     aof_policy_version: str
     default: Literal["deny"]
@@ -110,6 +120,7 @@ class CompiledPolicy(_M):
     slos: SloRule = SloRule()
     llm: LlmRule | None = None
     a2a: A2aRule = A2aRule()
+    identity: IdentityRule = IdentityRule()
 
     def rule(self, tool: str) -> ToolRule | None:
         return next((t for t in self.tools if t.name == tool), None)

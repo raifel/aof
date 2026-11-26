@@ -90,9 +90,23 @@ def cmd_serve(args) -> int:
             print("policy has an llm section but the anthropic SDK is missing: pip install 'aof[gateway]'",
                   file=sys.stderr)
             return 2
+    a2a_proxy = None
+    a2a = policy.a2a
+    if (a2a.peers or a2a.allowed_callers) and not args.no_a2a:
+        from .a2a_proxy import A2aProxy
+
+        base_url = (args.public_url or f"http://{args.host}:{args.port}/mcp").rsplit("/mcp", 1)[0]
+        a2a_proxy = A2aProxy(gateway, upstream_url=args.a2a_upstream_url, public_url=f"{base_url}/a2a")
+        if not a2a.enabled:
+            print(f"a2a configured but the agent is at {policy.agent.autonomy_level.value}: "
+                  "every A2A call will be denied until it reaches L4", file=sys.stderr)
     public_url = args.public_url or f"http://{args.host}:{args.port}/mcp"
     app = http_app(gateway, upstream, StaticTokenVerifier(args.tokens), issuer_url=args.issuer_url,
-                   public_url=public_url, host=args.host, llm_proxy=llm_proxy)
+                   public_url=public_url, host=args.host, llm_proxy=llm_proxy, a2a_proxy=a2a_proxy)
+    if a2a_proxy:
+        print(f"agent-to-agent: POST http://{args.host}:{args.port}/a2a/peers/<peer> "
+              f"(peers: {', '.join(p.name for p in a2a.peers) or '-'}); inbound POST /a2a"
+              + ("" if args.a2a_upstream_url else " disabled (no --a2a-upstream-url)"), file=sys.stderr)
     if llm_proxy:
         print(f"model calls: POST http://{args.host}:{args.port}/v1/messages "
               f"(models: {', '.join(policy.llm.models)})", file=sys.stderr)
@@ -202,6 +216,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--public-url", help="http: this gateway's public /mcp URL")
     s.add_argument("--no-auto-demote", action="store_true")
     s.add_argument("--no-llm", action="store_true", help="http: do not serve /v1/messages")
+    s.add_argument("--no-a2a", action="store_true", help="http: do not serve the A2A routes")
+    s.add_argument("--a2a-upstream-url", help="http: the app's own A2A JSON-RPC endpoint (inbound calls)")
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- <app server command>")
     s.set_defaults(fn=cmd_serve)
 

@@ -82,6 +82,25 @@ class LlmRule(_M):
     fast_mode_multiplier: float = 2.0
 
 
+class A2aPeerRule(_M):
+    name: str
+    card_url: str
+    skills: list[str]
+    credential_env: str | None = None
+
+
+class A2aRule(_M):
+    enabled: bool = False
+    inbound: bool = False
+    max_delegation_depth: int = 3
+    max_delegations_per_run: int = 5
+    allowed_callers: list[str] = []
+    peers: list[A2aPeerRule] = []
+
+    def peer(self, name: str) -> A2aPeerRule | None:
+        return next((p for p in self.peers if p.name == name), None)
+
+
 class CompiledPolicy(_M):
     aof_policy_version: str
     default: Literal["deny"]
@@ -90,6 +109,7 @@ class CompiledPolicy(_M):
     tools: list[ToolRule]
     slos: SloRule = SloRule()
     llm: LlmRule | None = None
+    a2a: A2aRule = A2aRule()
 
     def rule(self, tool: str) -> ToolRule | None:
         return next((t for t in self.tools if t.name == tool), None)

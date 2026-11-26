@@ -25,6 +25,7 @@ from .enums import (
 )
 from .findings import Finding, error, info, warning
 from .models import Project, Tool, ToolManifest
+from .models.project import A2aConfig
 from .platform import PlatformConfig
 
 A = "tools.manifest"
@@ -136,6 +137,7 @@ def check_policy(project: Project, manifest: ToolManifest, platform: PlatformCon
                              f"budgets.{name}={app_v} exceeds the platform ceiling {plat_v}"))
 
     out.extend(_check_llm(project, platform))
+    out.extend(_check_a2a(project))
 
     if platform.telemetry.genai_semconv_version == "PIN_ME":
         out.append(warning("AOF-P030", "platform.yaml",
@@ -163,6 +165,25 @@ def _check_llm(project: Project, platform: PlatformConfig) -> list[Finding]:
     for t in cfg.allowed_server_tools:
         if t not in plat.allowed_server_tools:
             out.append(error("AOF-P042", "aof.yaml", f"server tool {t} is not allowed by the platform"))
+    return out
+
+
+def _check_a2a(project: Project) -> list[Finding]:
+    cfg = project.a2a
+    if cfg is None or not (cfg.peers or cfg.allowed_callers):
+        return []
+    out: list[Finding] = []
+    if project.autonomy.target < AutonomyLevel.L4:
+        out.append(error("AOF-P050", "aof.yaml", "agent-to-agent traffic (a2a) requires autonomy target L4",
+                         "remove the a2a block or raise the target"))
+    if cfg.allowed_callers and not project.hosts_agent:
+        out.append(error("AOF-P051", "aof.yaml", "a2a.allowed_callers requires hosts_agent and an agent card"))
+    names = [peer.name for peer in cfg.peers]
+    for name in sorted({n for n in names if names.count(n) > 1}):
+        out.append(error("AOF-P053", "aof.yaml", f"a2a peer {name} is listed more than once"))
+    for peer in cfg.peers:
+        if not peer.card_url.startswith("https://"):
+            out.append(error("AOF-P052", "aof.yaml", f"a2a peer {peer.name}: card_url must be https"))
     return out
 
 
@@ -225,6 +246,7 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
 
     level = project.autonomy.current
     budgets = _effective_budgets(project, platform)
+    a2a = project.a2a or A2aConfig()
     tools = []
     for t in manifest.tools:
         decision, reason = decide(t, level)
@@ -277,10 +299,14 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
         "budgets": budgets,
         "tools": tools,
         "a2a": {
-            "enabled": project.hosts_agent and level >= AutonomyLevel.L4,
+            "enabled": level >= AutonomyLevel.L4,  # the current level: a demotion turns it off
+            "inbound": project.hosts_agent,
             "mtls": True,
             "verify_agent_cards": True,
             "max_delegation_depth": budgets["max_delegation_depth"],
+            "max_delegations_per_run": a2a.max_delegations_per_run,
+            "allowed_callers": a2a.allowed_callers,
+            "peers": [peer.model_dump() for peer in a2a.peers],
         },
         "memory": {"scope": "per_user_per_tenant", "provenance": True, "ttl_required": True},
         "kill_switch": {"enabled": True, "runbook": project.artefacts.runbook},

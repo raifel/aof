@@ -50,11 +50,29 @@ class AgentSkill(Open):
     description: str
 
 
+class AgentInterface(Open):
+    url: str
+    protocolBinding: str = "JSONRPC"
+    protocolVersion: str | None = None
+
+
 class AgentCard(Open):
+    """A2A agent card. A2A 1.0 lists endpoints in supportedInterfaces; 0.3 used url."""
+
     name: str
     description: str
-    url: str
+    url: str | None = None
+    supportedInterfaces: list[AgentInterface] = []
     version: str
     skills: list[AgentSkill] = Field(min_length=1)
     securitySchemes: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+
+    def endpoint(self, binding: str = "JSONRPC") -> str | None:
+        for i in self.supportedInterfaces:
+            if i.protocolBinding.upper() == binding:
+                return i.url
+        return self.url
+
+    def skill_ids(self) -> set[str]:
+        return {s.id for s in self.skills}

@@ -135,9 +135,9 @@ async def serve_stdio(gateway: Gateway, upstream: McpUpstream, principal: Princi
 
 
 def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_url: str,
-             public_url: str, host: str = "127.0.0.1", llm_proxy=None):
-    """A Starlette app: /mcp for tools and, with an LlmProxy, /v1/messages for model calls.
-    The upstream connection lives for the app's lifetime."""
+             public_url: str, host: str = "127.0.0.1", llm_proxy=None, a2a_proxy=None):
+    """A Starlette app: /mcp for tools, /v1/messages for model calls (with an LlmProxy) and
+    /a2a for agent-to-agent calls (with an A2aProxy). The upstream lives for the app's lifetime."""
     from mcp.server.auth.settings import AuthSettings
 
     routes = []
@@ -145,6 +145,10 @@ def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_
         from .llm import llm_route
 
         routes.append(llm_route(llm_proxy, token_verifier))
+    if a2a_proxy is not None:
+        from .a2a_proxy import a2a_routes
+
+        routes.extend(a2a_routes(a2a_proxy, token_verifier))
     server = build_server(gateway, token_principal)
     app = server.streamable_http_app(
         host=host,

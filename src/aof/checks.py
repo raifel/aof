@@ -113,7 +113,10 @@ def check_agent_card(lp: LoadedProject) -> list[Finding]:
         return out
     if not card.securitySchemes:
         out.append(error("AOF-C030", where, "agent card must declare securitySchemes (no anonymous agents)"))
-    if not card.url.startswith("https://"):
+    endpoint = card.endpoint()
+    if endpoint is None:
+        out.append(error("AOF-C033", where, "agent card has no JSONRPC endpoint (supportedInterfaces or url)"))
+    elif not endpoint.startswith("https://"):
         out.append(error("AOF-C031", where, "agent endpoint must be https (mTLS through the gateway)"))
     if not p.hosts_agent:
         out.append(warning("AOF-C032", where, "agent card present but hosts_agent is false"))

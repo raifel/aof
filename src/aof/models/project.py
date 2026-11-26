@@ -79,6 +79,23 @@ class LlmConfig(Strict):
     allowed_server_tools: list[str] = []  # subset of the platform's list
 
 
+class A2aPeer(Strict):
+    """An agent this app may delegate to, through the gateway."""
+
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")  # used in the gateway path /a2a/peers/<name>
+    card_url: str  # the peer's agent card, normally https://host/.well-known/agent-card.json
+    skills: list[str] = Field(min_length=1)  # skills the peer's card must keep advertising
+    credential_env: str | None = None  # env var holding the gateway's token for this peer
+
+
+class A2aConfig(Strict):
+    """Agent-to-agent traffic through the gateway. Needs autonomy L4."""
+
+    peers: list[A2aPeer] = []  # outbound: agents this app may delegate to
+    allowed_callers: list[str] = []  # inbound: agent ids that may call this app's agent
+    max_delegations_per_run: PositiveInt = 5
+
+
 class Approvals(Strict):
     architecture_review: Signoff | None = None  # pattern + autonomy level sign-off
     review_board: Signoff | None = None  # required for T3 apps and L3+ promotion
@@ -95,5 +112,6 @@ class Project(Strict):
     mcp_server: McpServerRef
     budgets: Budgets = Budgets()
     llm: LlmConfig | None = None  # set to route model calls through the gateway
+    a2a: A2aConfig | None = None  # set to route agent-to-agent calls through the gateway
     approvals: Approvals = Approvals()
     artefacts: Artefacts = Artefacts()

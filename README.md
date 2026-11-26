@@ -145,6 +145,37 @@ Streaming is passed through. Cost is computed from `usage` x the prices in
 the same per-run budget as tool calls. The audit log records token counts and cost, never
 prompt or response content. `--no-llm` turns the endpoint off.
 
+### Agent-to-agent calls (A2A)
+
+With an `a2a:` block in `aof.yaml` and autonomy **L4**, the HTTP gateway carries A2A
+JSON-RPC traffic both ways (A2A 1.0 method names; 0.3 names are accepted too):
+
+```yaml
+a2a:
+  peers:                       # outbound: agents this app may delegate to
+    - name: billing
+      card_url: https://billing.example/.well-known/agent-card.json
+      skills: [invoice_lookup] # the peer's card must keep advertising these
+      credential_env: BILLING_A2A_TOKEN
+  allowed_callers: [agent:orchestrator]   # inbound (needs hosts_agent)
+  max_delegations_per_run: 5
+```
+
+- **Outbound:** the app's agent sends A2A requests to `POST /a2a/peers/<peer>`. The
+  gateway loads and checks the peer's agent card, adds one to `x-aof-delegation-depth`,
+  attaches the gateway's credential for that peer, and forwards the payload unchanged.
+- **Inbound:** other agents read `/.well-known/agent-card.json` (the app's card with its
+  endpoint rewritten to the gateway) and call `POST /a2a`. The calling agent is the
+  token's `client_id`; the user is its subject. Start the gateway with
+  `--a2a-upstream-url` pointing at the app's own A2A server.
+
+Checks: kill switch, autonomy L4 at the *current* level (a demotion cuts A2A off), method
+allowlist (push-notification webhooks are refused), peer or caller allowlist, delegation
+depth, per-run delegation and cost budgets, task ownership (a caller can only read,
+cancel or continue tasks it started, and `ListTasks` is filtered), and the peer card's
+contracted skills. Denials are JSON-RPC errors with `data.error` set to the AOF code.
+The audit log records method, peer or caller, and task ids, never message content.
+
 ## Layout
 
 ```
@@ -167,8 +198,11 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 
 ## Not built yet
 
-- **A2A path through the gateway.** A2A depth enters only through `_meta` and the
-  `x-aof-delegation-depth` header.
+- **A2A path limits.** JSON-RPC binding only (no HTTP+JSON or gRPC). No mTLS between
+  gateways (terminate it in front) and no agent card signature verification yet. A2A
+  can't say which skill a message is for, so skills are checked on the peer's card,
+  not per message. Task ownership lives in process memory, so it is lost on restart and
+  not shared between replicas.
 - **LLM path limits.** Anthropic only. Budgets are checked before a call, so one call can
   overshoot the cost cap. Long-context and regional price premiums are not modelled;
   check `platform.yaml` prices against the pricing page. No `count_tokens` or batches

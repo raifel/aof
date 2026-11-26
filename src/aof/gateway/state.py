@@ -96,6 +96,7 @@ class RunState:
     run_id: str
     steps: int = 0  # tool calls
     model_calls: int = 0
+    delegations: int = 0  # A2A messages sent or received
     cost_usd: float = 0.0
     last_seen: float = field(default_factory=time.time)
 

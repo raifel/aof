@@ -348,6 +348,10 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 
 ## Not built yet
 
+The pending steps, decisions and what each needs are tracked in [ROADMAP.md](ROADMAP.md).
+Design documents: [architecture](docs/architecture.md), [deployment and network](docs/deployment.md),
+[threat model](docs/threat-model.md), [observability and audit](docs/observability.md).
+
 - **A2A path limits.** JSON-RPC binding only (no HTTP+JSON or gRPC). No mTLS between
   gateways (terminate it in front) and no agent card signature verification yet. A2A
   can't say which skill a message is for, so skills are checked on the peer's card,

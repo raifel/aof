@@ -6,3 +6,4 @@ dist/
 schemas/
 gateway-policy.json
 aof-report.json
+.aof-gateway/

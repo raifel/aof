@@ -1,13 +1,13 @@
-# AOF: Agentic Onboarding Framework, contract kit
+# AOF: Agentic Onboarding Framework
 
 This kit implements the app-facing part of the
 [AOF reference design](docs/AOF-Reference-Design.pdf). An app is
 onboarded when its repo holds the seven contract artefacts and `aof validate` passes.
-The policy compiler then turns its tool manifest into the policy the shared agent
-gateway enforces on every call.
+The policy compiler then turns its tool manifest into the policy the agent gateway
+(`aof gateway`) enforces on every call.
 
 ```bash
-uv venv && uv pip install -e '.[dev,mcp]'
+uv venv && uv pip install -e '.[dev,gateway]'
 aof init ../my-app --name my-app --owner my-team   # scaffold the seven artefacts
 aof status ../my-app                                # where it is in the 7-stage lifecycle
 aof validate ../my-app                              # what CI runs on every commit
@@ -65,6 +65,62 @@ The compiled policy defaults to deny. It enforces the **approved** level (`auton
 not the requested one, so writes stay denied until promotion. T4 tools always compile to deny.
 User-facing agents act on behalf of the signed-in user.
 
+## Agent gateway (`aof gateway`)
+
+The gateway sits between agents and an app's MCP server. Agents connect to it as an
+MCP server. It shows each user only the tools they may call, and decides every call
+against the compiled policy:
+
+| # | Check | Denial code |
+| --- | --- | --- |
+| 1 | Kill switch | `KILL_SWITCH` |
+| 2 | Tool is in the policy (default deny) | `UNKNOWN_TOOL` |
+| 3 | Decision at the current level (demotions applied; T4 always denied) | `DENIED_BY_POLICY` |
+| 4 | The user holds the tool's scopes (on-behalf-of; the agent cannot borrow them) | `MISSING_SCOPE` |
+| 5 | Per-run budgets: steps, cost, delegation depth | `STEP_BUDGET`, `COST_BUDGET`, `DELEGATION_DEPTH` |
+| 6 | Rate limit per user and tool | `RATE_LIMITED` |
+| 7 | `within_limits` writes: amount and per-hour caps; over a limit escalates to approval | — |
+| 8 | `require_approval`: dry-run preview, then one human approval per action | — |
+
+**Approvals (ASI09).** The first call returns `approval_required` with an
+`approval_id` and the dry-run preview. A human approves that single id. The agent
+repeats the identical call with `aof_approval_id`. Each approval can be used once, expires
+after an hour, and is bound to the user, tool and argument hash. If the tool sets an
+`approver_role`, the approver must hold that role and cannot be the requesting user.
+An explicit `dry_run=true` call runs without approval.
+
+**Audit.** Every decision goes to a hash-chained JSONL log. It stores the argument
+hash and keys, never the values. `aof gateway audit --verify` detects edits.
+
+**Demotion.** When policy violations in the SLO window exceed `max_policy_violations`,
+the gateway lowers the agent one autonomy level by itself. Operators can also demote by hand.
+
+**Telemetry.** Each call emits an `execute_tool {tool}` span with OpenTelemetry GenAI
+attributes plus `aof.decision`, `aof.code` and `aof.risk_tier`. Spans are no-ops until
+the host configures an OTel SDK.
+
+```bash
+aof compile-policy examples/refunds-assistant -o policy.json
+
+# stdio, acting for one user (local development)
+aof gateway serve --policy policy.json --user alice --scopes orders:read,refunds:read \
+  --cwd examples/refunds-assistant -- python src/server.py
+
+# HTTP with bearer tokens (dev token file; use your IdP's TokenVerifier in production)
+aof gateway serve --transport http --port 8765 --policy policy.json --tokens tokens.json \
+  --cwd examples/refunds-assistant -- python src/server.py
+
+# operate it (works against a running gateway: state is shared through --state-dir)
+aof gateway approvals
+aof gateway approve apr_1234 --by bob --roles support-lead
+aof gateway kill agent:refunds-assistant --by ops --reason "cost spike"
+aof gateway demote agent:refunds-assistant --to L1 --by ops --reason "incident 42"
+aof gateway audit --verify
+```
+
+Callers can set `_meta["aof/run_id"]` (budgets are counted per run; the default is the
+MCP session) and `_meta["aof/delegation_depth"]` for A2A hops.
+
 ## Layout
 
 ```
@@ -77,14 +133,27 @@ src/aof/
   conformance.py live MCP server vs manifest (needs the `mcp` extra, SDK v2)
   platform.yaml  platform-owned thresholds and budgets
   templates/app  `aof init` scaffold: a read-only L0/T1 lighthouse app
+  gateway/
+    engine.py      per-call decision (pure)       approvals.py  one approval per action
+    core.py        Gateway.call_tool orchestration audit.py      hash-chained audit log
+    state.py       kill switch, demotions, counters telemetry.py OTel GenAI spans
+    mcp_proxy.py   MCP front + upstream client     cli.py        `aof gateway ...`
 examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on review board
 ```
 
 ## Not built yet
 
-This is the contract kit only. The shared platform it targets is out of scope for now:
-the runtime/orchestrator, the gateway that loads `gateway-policy.json`, the internal MCP
-registry service, the eval runner and AgentOps dashboards.
+- **LLM and A2A paths through the gateway.** Today it governs tool calls. Model spend
+  enters only through `Gateway.record_model_cost`, and A2A depth only through `_meta`.
+- **On-behalf-of token exchange to the upstream app.** The gateway checks the user's
+  scopes, but it calls the app over its own connection.
+- **Production identity.** `StaticTokenVerifier` is for development only. Plug in a JWT
+  verifier for your IdP. Operator commands take `--by`/`--roles` on trust; put them
+  behind SSO.
+- **Multi-replica state.** State is a locked JSON file for one host. Swap `DurableStore`
+  for Redis or a database. Rate and budget counters are per process.
+- **Other platform pieces.** The runtime/orchestrator, the internal MCP registry service,
+  the eval runner and the AgentOps dashboards.
 
 Open decisions carried over from the design:
 

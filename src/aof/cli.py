@@ -201,6 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.add_argument("command", nargs=argparse.REMAINDER, help="-- <server command>")
     s.set_defaults(fn=cmd_check_server)
+
+    from .gateway.cli import register as register_gateway
+
+    register_gateway(sub)
     return p
 
 

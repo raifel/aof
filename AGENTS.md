@@ -3,7 +3,7 @@
 ## Build and test
 
 ```bash
-uv venv && uv pip install --python .venv/bin/python -e '.[dev,mcp]'
+uv venv && uv pip install --python .venv/bin/python -e '.[dev,gateway]'
 .venv/bin/pytest -q
 .venv/bin/aof status examples/refunds-assistant
 ```
@@ -15,3 +15,5 @@ uv venv && uv pip install --python .venv/bin/python -e '.[dev,mcp]'
 - AOF-owned schemas use `Strict` (unknown keys fail). Schemas that mirror external specs (MCP Registry, A2A) use `Open`.
 - Platform numbers belong in `src/aof/platform.yaml`, never hard-coded in checks.
 - The template in `src/aof/templates/app` must keep passing `aof validate` after `aof init` (tested).
+- Gateway: keep `engine.py` free of I/O and transport code; MCP specifics belong in `mcp_proxy.py`.
+- Every gateway decision must be written to the audit log, and a denial must return a stable `error` code the model can act on.

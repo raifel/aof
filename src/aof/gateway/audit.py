@@ -31,8 +31,12 @@ def _hash(record: dict[str, Any]) -> str:
 
 
 class AuditLog:
-    def __init__(self, path: str | Path | None = None):
+    """One hash chain. Processes on one host may share a file (appends are flock'ed). Give
+    each replica on another host its own file and `replica` id; verify each chain."""
+
+    def __init__(self, path: str | Path | None = None, replica: str | None = None):
         self.path = Path(path) if path else None
+        self.replica = replica
         self.records: list[dict[str, Any]] = []  # in-memory mode
 
     def _last(self) -> tuple[int, str]:
@@ -66,6 +70,8 @@ class AuditLog:
     def _append_locked(self, event: str, fields: dict[str, Any]) -> dict[str, Any]:
         seq, prev = self._last()
         record = {"seq": seq + 1, "ts": time.time(), "event": event, **fields, "prev": prev}
+        if self.replica:
+            record["replica"] = self.replica
         record["hash"] = _hash(record)
         if self.path is None:
             self.records.append(record)

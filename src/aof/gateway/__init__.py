@@ -11,10 +11,10 @@ from .core import Gateway, ToolResult, Upstream, UpstreamTool
 from .engine import Action, PolicyEngine, Verdict
 from .identity import Principal
 from .obo import OboBroker, TokenExchanger, TokenExchangeError
-from .state import DurableStore, GatewayState
+from .state import DurableStore, GatewayState, RedisStore, Store, open_store
 
 __all__ = [
     "APPROVAL_ARG", "Action", "Approval", "ApprovalError", "ApprovalService", "AuditLog",
-    "CompiledPolicy", "DurableStore", "Gateway", "GatewayState", "OboBroker", "PolicyEngine", "Principal",
-    "TokenExchangeError", "TokenExchanger", "ToolResult", "Upstream", "UpstreamTool", "Verdict", "load_policy", "verify",
+    "CompiledPolicy", "DurableStore", "Gateway", "GatewayState", "OboBroker", "PolicyEngine", "Principal", "RedisStore", "Store",
+    "TokenExchangeError", "TokenExchanger", "ToolResult", "Upstream", "UpstreamTool", "Verdict", "load_policy", "open_store", "verify",
 ]

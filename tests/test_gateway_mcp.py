@@ -60,4 +60,4 @@ def test_operator_cli(tmp_path, capsys):
                  "--reason", "SLO", *sd]) == 0
     assert main(["gateway", "approvals", *sd]) == 0
     assert main(["gateway", "audit", "--verify", *sd]) == 0
-    assert "audit chain OK (3 records)" in capsys.readouterr().out
+    assert "audit.jsonl: chain OK (3 records)" in capsys.readouterr().out

@@ -126,6 +126,39 @@ aof gateway demote agent:refunds-assistant --to L1 --by ops --reason "incident 4
 aof gateway audit --verify
 ```
 
+### Running several replicas
+
+By default state lives in `--state-dir/state.json`, with rate and budget counters in
+process memory, which is fine for one gateway. To run more than one, point every replica
+at the same Redis:
+
+```bash
+aof gateway serve --transport http --policy policy.json --state-url rediss://redis:6380/0 \
+  --replica-id gw-1 --upstream-url https://refunds.internal/mcp      # or AOF_STATE_URL / AOF_REPLICA_ID
+```
+
+Kill switches, demotions, approvals, A2A task owners, per-run counters (steps, model
+calls, delegations, cost) and every sliding window (rate limits, write limits, policy
+violations) then live in Redis. The checks that guard a limit are atomic, so replicas
+cannot oversell the last slot:
+
+- **Rate and write limits:** a slot is taken with an atomic count-and-add when the
+  decision is made.
+- **Run budgets:** steps, model calls and delegations are reserved by an atomic
+  increment, rolled back if over the limit.
+- **Approvals:** an approval moves pending → approved → consumed through atomic
+  read-modify-writes, so it executes once even if two replicas race on it.
+- **Auto-demotion:** a demotion applies only if the agent is still at the level the
+  replica saw, so two replicas breaching the SLO together demote once.
+
+Cost can't be reserved because a call's price is known only afterwards, so concurrent
+calls in one run can each pass the cost check and overshoot together.
+
+Each replica writes its own hash-chained audit log, `audit-<replica>.jsonl` (default: the
+host name), and stamps `replica` on every record. `aof gateway audit --verify` checks
+every chain in `--state-dir`. Ship the files to your log store from each host.
+Operator commands accept `--state-url` too, but in production use `--gateway-url`.
+
 ### Identity
 
 In HTTP mode every route (`/mcp`, `/v1/messages`, `/a2a`, `/admin`) needs a bearer
@@ -273,12 +306,11 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 - **A2A path limits.** JSON-RPC binding only (no HTTP+JSON or gRPC). No mTLS between
   gateways (terminate it in front) and no agent card signature verification yet. A2A
   can't say which skill a message is for, so skills are checked on the peer's card,
-  not per message. Task ownership lives in process memory, so it is lost on restart and
-  not shared between replicas.
+  not per message.
 - **LLM path limits.** Anthropic only. Budgets are checked before a call, so one call can
   overshoot the cost cap. Long-context and regional price premiums are not modelled;
   check `platform.yaml` prices against the pricing page. No `count_tokens` or batches
-  endpoints. The model-call rate limit is per process.
+  endpoints.
 - **On-behalf-of limits.** The gateway authenticates to the IdP with a client secret only
   (no `private_key_jwt` or mTLS), sends no RFC 8693 `actor_token`, and doesn't bind tokens
   with DPoP. Each upstream call opens a new MCP connection, which costs one extra round
@@ -286,8 +318,11 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 - **Identity limits.** JWT access tokens only: no opaque tokens (RFC 7662
   introspection), no revocation check before `exp`, and no sender-constrained tokens
   (DPoP or mTLS). `/admin` has no UI of its own; build approval screens on top of it.
-- **Multi-replica state.** State is a locked JSON file for one host. Swap `DurableStore`
-  for Redis or a database. Rate and budget counters are per process.
+- **Shared-state limits.** Redis only (`RedisStore`); a database backend would implement
+  the same `Store` protocol. The gateway calls Redis synchronously, inline, one round
+  trip per check. On-behalf-of tokens and peer agent cards are cached per replica, by
+  design: bearer tokens are not copied into shared storage. Audit chains are per replica,
+  not one global chain.
 - **Other platform pieces.** The runtime/orchestrator, the internal MCP registry service,
   the eval runner and the AgentOps dashboards.
 

@@ -19,7 +19,7 @@ from typing import Any
 
 from .audit import args_digest
 from .identity import Principal
-from .state import DurableStore
+from .state import Store
 
 APPROVAL_ARG = "aof_approval_id"
 _IGNORED_ARGS = {"dry_run", APPROVAL_ARG}
@@ -56,7 +56,12 @@ class ApprovalError(Exception):
 
 
 class ApprovalService:
-    def __init__(self, store: DurableStore, ttl_seconds: int = 3600):
+    """Approvals live in the gateway store, so any replica can request, decide or consume
+    them. Decide and consume are atomic read-modify-writes: an approval is used once."""
+
+    RETENTION_S = 7 * 24 * 3600  # kept this long after expiry, for operators and audits
+
+    def __init__(self, store: Store, ttl_seconds: int = 3600):
         self.store = store
         self.ttl = ttl_seconds
 
@@ -69,26 +74,36 @@ class ApprovalService:
             run_id=run_id, args=args, args_hash=approval_digest(args), preview=preview,
             approver_role=approver_role, created_at=now, expires_at=now + self.ttl,
         )
-        with self.store.transaction() as d:
-            d["approvals"][a.id] = asdict(a)
+        self.store.put("approvals", a.id, asdict(a), ttl=self.ttl + self.RETENTION_S)
         return a
 
     def get(self, approval_id: str) -> Approval | None:
-        raw = self.store.read()["approvals"].get(approval_id)
+        raw = self.store.get("approvals", approval_id)
         return Approval(**raw) if raw else None
 
     def list(self, status: str | None = None) -> list[Approval]:
-        items = [Approval(**r) for r in self.store.read()["approvals"].values()]
+        items = [Approval(**r) for r in self.store.all("approvals").values()]
         return sorted((a for a in items if status is None or a.status == status), key=lambda a: a.created_at)
+
+    def _transition(self, approval_id: str, check) -> Approval:
+        out: list[Approval] = []
+
+        def fn(raw):
+            if raw is None:
+                raise ApprovalError("APPROVAL_NOT_FOUND", f"no approval {approval_id}")
+            a = Approval(**raw)
+            check(a)  # raises ApprovalError, or mutates a
+            out.append(a)
+            return asdict(a)
+
+        self.store.update("approvals", approval_id, fn)
+        return out[-1]
 
     def _decide(self, approval_id: str, approver: Principal, status: str, note: str | None,
                 now: float | None) -> Approval:
         now = now or time.time()
-        with self.store.transaction() as d:
-            raw = d["approvals"].get(approval_id)
-            if raw is None:
-                raise ApprovalError("APPROVAL_NOT_FOUND", f"no approval {approval_id}")
-            a = Approval(**raw)
+
+        def check(a: Approval) -> None:
             if a.status != "pending":
                 raise ApprovalError("APPROVAL_NOT_PENDING", f"approval is {a.status}")
             if now > a.expires_at:
@@ -99,8 +114,8 @@ class ApprovalService:
                 raise ApprovalError("SELF_APPROVAL", "the requesting user cannot decide their own action")
             a.status, a.decided_by, a.decided_at, a.note = status, approver.user_id, now, note
             a.history.append({"status": status, "by": approver.user_id, "at": now})
-            d["approvals"][a.id] = asdict(a)
-            return a
+
+        return self._transition(approval_id, check)
 
     def approve(self, approval_id: str, approver: Principal, note: str | None = None,
                 now: float | None = None) -> Approval:
@@ -114,11 +129,8 @@ class ApprovalService:
                 args: dict[str, Any], now: float | None = None) -> Approval:
         """Single use: marks the approval consumed if it matches this exact call."""
         now = now or time.time()
-        with self.store.transaction() as d:
-            raw = d["approvals"].get(approval_id)
-            if raw is None:
-                raise ApprovalError("APPROVAL_NOT_FOUND", f"no approval {approval_id}")
-            a = Approval(**raw)
+
+        def check(a: Approval) -> None:
             if a.status == "pending":
                 raise ApprovalError("APPROVAL_PENDING", "still waiting for a human decision")
             if a.status != "approved":
@@ -131,5 +143,5 @@ class ApprovalService:
                 raise ApprovalError("APPROVAL_MISMATCH", "arguments differ from what was approved")
             a.status = "consumed"
             a.history.append({"status": "consumed", "at": now})
-            d["approvals"][a.id] = asdict(a)
-            return a
+
+        return self._transition(approval_id, check)

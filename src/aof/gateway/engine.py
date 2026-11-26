@@ -1,4 +1,8 @@
-"""Policy engine: one decision per tool call. No I/O beyond reading gateway state.
+"""Policy engine: one decision per tool call. No I/O beyond the gateway state.
+
+Slots that must not be oversold across replicas (rate-limit windows, write limits) are
+taken atomically here, at the moment of the decision. A taken write slot is reported in
+`Verdict.details["write_slot"]` so the core does not count that write again.
 
 Checks, in order (first failure wins):
   1. kill switch              5. per-run budgets (steps, cost, delegation depth)
@@ -69,7 +73,9 @@ class PolicyEngine:
         return self.policy.agent.id
 
     def evaluate(self, principal: Principal, tool: str, args: dict[str, Any], run: RunState,
-                 now: float, delegation_depth: int = 0) -> Verdict:
+                 now: float, delegation_depth: int = 0, step: int | None = None) -> Verdict:
+        """`step` is this call's number in the run, already counted by the caller (atomic
+        across replicas); without it the engine assumes the next one."""
         p, b = self.policy, self.policy.budgets
 
         killed = self.state.killed(self.agent_id)
@@ -90,9 +96,10 @@ class PolicyEngine:
             return Verdict(Action.DENY, "MISSING_SCOPE", f"user {principal.user_id} lacks {', '.join(missing)}",
                            rule, violation=True, hint="the user must hold these scopes; the agent cannot borrow them")
 
-        if run.steps >= b.max_steps_per_run:
-            return Verdict(Action.DENY, "STEP_BUDGET", f"run used {run.steps}/{b.max_steps_per_run} steps", rule,
-                           hint="stop and summarise progress for the user")
+        step = run.steps + 1 if step is None else step
+        if step > b.max_steps_per_run:
+            return Verdict(Action.DENY, "STEP_BUDGET", f"run used {b.max_steps_per_run}/{b.max_steps_per_run} steps",
+                           rule, hint="stop and summarise progress for the user")
         if run.cost_usd >= b.max_cost_usd_per_run:
             return Verdict(Action.DENY, "COST_BUDGET",
                            f"run cost ${run.cost_usd:.2f} reached the ${b.max_cost_usd_per_run:.2f} cap", rule)
@@ -102,8 +109,8 @@ class PolicyEngine:
 
         key = (self.agent_id, principal.user_id, tool)
         if rule.rate_limit:
-            used = self.state.calls.count(key, rule.rate_limit.window_seconds, now)
-            if used >= rule.rate_limit.calls:
+            ok, used = self.state.calls.acquire(key, rule.rate_limit.window_seconds, rule.rate_limit.calls, now)
+            if not ok:
                 return Verdict(Action.DENY, "RATE_LIMITED",
                                f"{used} calls in the last {rule.rate_limit.per}; limit {rule.rate_limit.calls}",
                                rule, hint=f"retry after the current {rule.rate_limit.per}")
@@ -112,7 +119,8 @@ class PolicyEngine:
             breach = self._limit_breach(rule, args, key, now)
             if breach:
                 return Verdict(Action.APPROVAL, "LIMIT_EXCEEDED", f"{breach}: needs human approval", rule)
-            return Verdict(Action.ALLOW, "WITHIN_LIMITS", "auto-executed within limits", rule)
+            return Verdict(Action.ALLOW, "WITHIN_LIMITS", "auto-executed within limits", rule,
+                           details={"write_slot": (rule.limits or {}).get("max_per_hour") is not None})
 
         if decision == "require_approval":
             return Verdict(Action.APPROVAL, "APPROVAL_REQUIRED", why or "human approval required", rule)
@@ -130,6 +138,8 @@ class PolicyEngine:
             if amount > max_amount:
                 return f"amount {amount} exceeds limit {max_amount}"
         max_per_hour = limits.get("max_per_hour")
-        if max_per_hour is not None and self.state.writes.count(key, 3600, now) >= max_per_hour:
-            return f"{max_per_hour} writes in the last hour"
+        if max_per_hour is not None:
+            ok, _ = self.state.writes.acquire(key, 3600, max_per_hour, now)  # last check: takes the slot
+            if not ok:
+                return f"{max_per_hour} writes in the last hour"
         return None

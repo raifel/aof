@@ -116,9 +116,9 @@ class Gateway:
 
         with tool_span(tool, agent_id=self.agent_id, call_id=call_id, run_id=run_id,
                        user_id=principal.user_id) as span:
-            verdict = self.engine.evaluate(principal, tool, args, run, now, delegation_depth)
-            if verdict.code != "KILL_SWITCH":
-                run.steps += 1
+            # Count the step first (atomic across replicas), then decide; kill-switch denials are free.
+            step = None if self.state.killed(self.agent_id) else int(run.add("steps"))
+            verdict = self.engine.evaluate(principal, tool, args, run, now, delegation_depth, step=step)
             span.set_attribute("aof.decision", verdict.action.value)
             span.set_attribute("aof.code", verdict.code)
             if verdict.rule:
@@ -189,9 +189,8 @@ class Gateway:
         except TokenExchangeError as exc:
             return self._exchange_failed(exc, base, span)
         key = (self.agent_id, principal.user_id, tool)
-        self.state.calls.add(key, now)
-        if verdict.rule.access == "write" and verdict.code != "DRY_RUN":
-            self.state.writes.add(key, now)
+        if verdict.rule.access == "write" and verdict.code != "DRY_RUN" and not verdict.details.get("write_slot"):
+            self.state.writes.add(key, now, 3600)  # the engine already took a slot for within-limits writes
         if approval_id and verdict.rule.dry_run_preview:
             args = {**args, "dry_run": False}  # the approved action itself, not another preview
         try:
@@ -224,20 +223,22 @@ class Gateway:
 
     def record_model_cost(self, run_id: str, usd: float) -> None:
         """Hook for the LLM path: model spend counts toward the per-run cost cap."""
-        self.state.run(run_id, self.clock()).cost_usd += usd
+        self.state.run(run_id).add("cost_usd", usd)
 
     def record_violation(self, now: float) -> None:
         key = (self.agent_id,)
-        self.state.violations.add(key, now)
         slos = self.policy.slos
         window = slos.demotion_window_hours * 3600
+        self.state.violations.add(key, now, window)
         if not self.auto_demote or self.state.violations.count(key, window, now) <= slos.max_policy_violations:
             return
         current = effective_level(self.policy, self.state)
         if current is AutonomyLevel.L0:
             return
         lower = list(AutonomyLevel)[current.rank - 1]
-        self.state.demote(self.agent_id, lower, by="gateway", reason="policy-violation SLO breached")
+        if not self.state.demote_from(self.agent_id, self.policy.agent.autonomy_level, current, lower,
+                                      by="gateway", reason="policy-violation SLO breached"):
+            return  # another replica demoted first
         self.state.violations.reset(key)  # fresh window at the new level
         self.audit.append("autonomy_demoted", agent=self.agent_id, from_level=current.value, to_level=lower.value,
                           reason="policy-violation SLO breached")

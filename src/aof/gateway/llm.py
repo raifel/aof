@@ -229,19 +229,21 @@ class LlmProxy:
                 raise LlmDenied(403, "SERVER_TOOL_NOT_ALLOWED", f"server tool {name or tool.get('type')} is not allowed")
 
         b = gw.policy.budgets
-        if run.model_calls >= rule.max_model_calls_per_run:
-            raise LlmDenied(403, "MODEL_CALL_BUDGET",
-                            f"run used {run.model_calls}/{rule.max_model_calls_per_run} model calls")
         if run.cost_usd >= b.max_cost_usd_per_run:
             raise LlmDenied(403, "COST_BUDGET",
                             f"run cost ${run.cost_usd:.4f} reached the ${b.max_cost_usd_per_run:.2f} cap")
         if depth > b.max_delegation_depth:
             raise LlmDenied(403, "DELEGATION_DEPTH", f"delegation depth {depth} exceeds {b.max_delegation_depth}")
 
+        # Last: take a model call and a rate-limit slot atomically (shared across replicas).
+        if not run.reserve("model_calls", rule.max_model_calls_per_run):
+            raise LlmDenied(403, "MODEL_CALL_BUDGET",
+                            f"run used {rule.max_model_calls_per_run}/{rule.max_model_calls_per_run} model calls")
         if rule.rate_limit:
             window = _WINDOW_S[rule.rate_limit.per]
-            used = gw.state.calls.count(self._rate_key(principal), window, now)
-            if used >= rule.rate_limit.calls:
+            ok, used = gw.state.calls.acquire(self._rate_key(principal), window, rule.rate_limit.calls, now)
+            if not ok:
+                run.add("model_calls", -1)  # give the reserved call back
                 raise LlmDenied(429, "RATE_LIMITED", f"{used} model calls in the last {rule.rate_limit.per}",
                                 headers={"retry-after": str(window)})
         return model
@@ -268,8 +270,6 @@ class LlmProxy:
                 gw.record_violation(now)
             return LlmResponse(d.status, error_body(d.status, d.code, str(d)), headers=d.headers)
 
-        gw.state.calls.add(self._rate_key(principal), now)
-        run.model_calls += 1
         if stream:
             return LlmResponse(200, events=self._stream(params, betas, model, run, base),
                                headers={"cache-control": "no-cache"})
@@ -313,7 +313,7 @@ class LlmProxy:
 
     def _charge(self, run, usage: _Usage, base: dict[str, Any], span) -> None:
         usd, priced = self.cost_usd(usage.model, usage.tokens)
-        run.cost_usd += usd
+        run_cost = run.add("cost_usd", usd)
         span.set_attribute("gen_ai.response.model", usage.model)
         span.set_attribute("gen_ai.response.id", usage.message_id)
         span.set_attribute("aof.cost_usd", round(usd, 6))
@@ -323,7 +323,7 @@ class LlmProxy:
             input_tokens=t.get("input_tokens"), output_tokens=t.get("output_tokens"),
             cache_read_input_tokens=t.get("cache_read_input_tokens"),
             cache_creation_input_tokens=t.get("cache_creation_input_tokens"),
-            cost_usd=round(usd, 6), priced=priced, run_cost_usd=round(run.cost_usd, 6),
+            cost_usd=round(usd, 6), priced=priced, run_cost_usd=round(run_cost, 6),
         )
 
 

@@ -213,7 +213,6 @@ class A2aProxy:
         self.card_ttl = card_ttl
         self.env = os.environ if env is None else env
         self._cards: dict[str, _CardEntry] = {}
-        self._owners: dict[tuple[str, str], str] = {}  # (scope, task id) -> owner key
 
     @property
     def rule(self):
@@ -263,22 +262,35 @@ class A2aProxy:
                 raise A2aDenied("COST_BUDGET",
                                 f"run cost ${run.cost_usd:.4f} reached the ${b.max_cost_usd_per_run:.2f} cap")
 
+    # Task owners live in the gateway store, so a follow-up may land on any replica.
+    TASK_OWNER_TTL_S = 7 * 24 * 3600
+
+    def _owner_of(self, scope: str, task_id: Any) -> str | None:
+        doc = self.gw.state.store.get("a2a_tasks", f"{self.gw.agent_id}|{scope}|{task_id}")
+        return doc["owner"] if doc else None
+
     def _check_owner(self, scope: str, owner: str, call: Call) -> None:
         task_id = _requested_task(call.method, call.params)
         if task_id is None:
             return
-        if self._owners.get((scope, task_id)) != owner:
+        if self._owner_of(scope, task_id) != owner:
             raise A2aDenied("TASK_NOT_OWNED", f"task {task_id} was not started by this caller", violation=True)
 
     def _claim(self, scope: str, owner: str, ids: set[str]) -> list[str]:
-        for t in ids:
-            self._owners.setdefault((scope, t), owner)
+        for t in ids:  # first writer wins: a task id cannot be re-claimed by someone else
+            self.gw.state.store.put_if_absent("a2a_tasks", f"{self.gw.agent_id}|{scope}|{t}", {"owner": owner},
+                                              ttl=self.TASK_OWNER_TTL_S)
         return sorted(ids)
+
+    def _reserve_delegation(self, call: Call, run) -> bool:
+        if call.method in NEW_WORK and _requested_task(call.method, call.params) is None:
+            return run.reserve("delegations", self.rule.max_delegations_per_run)
+        return True
 
     def _filter_list(self, scope: str, owner: str, body: dict[str, Any]) -> dict[str, Any]:
         result = body.get("result")
         if isinstance(result, dict) and isinstance(result.get("tasks"), list):
-            kept = [t for t in result["tasks"] if self._owners.get((scope, t.get("id"))) == owner]
+            kept = [t for t in result["tasks"] if self._owner_of(scope, t.get("id")) == owner]
             body = {**body, "result": {**result, "tasks": kept, "totalSize": len(kept)}}
         return body
 
@@ -344,8 +356,9 @@ class A2aProxy:
                 return self._deny(call, base, A2aDenied(exc.code, str(exc)), now)
             headers["authorization"] = f"Bearer {obo.access_token}"
             base = {**base, "on_behalf_of": obo.audit()}
-        if call.method in NEW_WORK and _requested_task(call.method, call.params) is None:
-            run.delegations += 1
+        if not self._reserve_delegation(call, run):
+            return self._deny(call, base, A2aDenied(
+                "DELEGATION_BUDGET", f"run used its {self.rule.max_delegations_per_run} delegations"), now)
         return await self._forward(card.endpoint(), call, headers, base, scope, owner)
 
     # ------------------------------------------------------------------ inbound
@@ -374,8 +387,9 @@ class A2aProxy:
                    "x-aof-caller": caller}
         if call.a2a_version:
             headers[VERSION_HEADER] = call.a2a_version
-        if call.method in NEW_WORK and _requested_task(call.method, call.params) is None:
-            run.delegations += 1
+        if not self._reserve_delegation(call, run):
+            return self._deny(call, base, A2aDenied(
+                "DELEGATION_BUDGET", f"run used its {self.rule.max_delegations_per_run} delegations"), now)
         return await self._forward(self.upstream_url, call, headers, base, scope, owner)
 
     async def own_card(self) -> dict[str, Any]:

@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from .audit import AuditLog, verify
 from .compiled import load_policy
 from .core import Gateway
 from .identity import Principal
-from .state import DurableStore, GatewayState
+from .state import GatewayState, open_store
 
 DEFAULT_STATE_DIR = ".aof-gateway"
 
@@ -32,15 +33,15 @@ def _csv(s: str | None) -> list[str]:
     return [x.strip() for x in (s or "").split(",") if x.strip()]
 
 
-def _paths(args) -> tuple[Path, Path]:
-    d = Path(args.state_dir)
-    return d / "state.json", d / "audit.jsonl"
+def _audit_path(args) -> Path:
+    replica = getattr(args, "replica_id", None)
+    return Path(args.state_dir) / (f"audit-{replica}.jsonl" if replica else "audit.jsonl")
 
 
 def _state(args) -> tuple[GatewayState, AuditLog, ApprovalService]:
-    state_path, audit_path = _paths(args)
-    state = GatewayState(DurableStore(state_path))
-    return state, AuditLog(audit_path), ApprovalService(state.store)
+    store = open_store(getattr(args, "state_url", None), args.state_dir)
+    state = GatewayState(store)
+    return state, AuditLog(_audit_path(args), replica=getattr(args, "replica_id", None)), ApprovalService(store)
 
 
 def _ts(t: float | None) -> str:
@@ -68,8 +69,6 @@ def _obo_broker(args, policy):
     if not endpoint.startswith("https://") and not args.allow_insecure_idp:
         print("--token-endpoint must be https (user tokens are sent to it)", file=sys.stderr)
         return 2
-    import os
-
     from .obo import OboBroker, TokenExchanger
 
     exchanger = TokenExchanger(endpoint, args.client_id or policy.agent.id,
@@ -117,7 +116,20 @@ def cmd_serve(args) -> int:
         print("the gateway needs the MCP SDK: pip install 'aof[gateway]'", file=sys.stderr)
         return 2
     policy = load_policy(args.policy)
-    state, audit, approvals = _state(args)
+    if args.state_url and not args.replica_id:
+        import socket
+
+        args.replica_id = socket.gethostname()
+    try:
+        state, audit, approvals = _state(args)
+    except (ValueError, ImportError) as exc:
+        print(f"cannot open gateway state: {exc}", file=sys.stderr)
+        return 2
+    if args.state_url:
+        print(f"state: shared at {args.state_url.split('@')[-1]} (replica {args.replica_id})", file=sys.stderr)
+    else:
+        print(f"state: {args.state_dir}/state.json, rate and budget counters in this process only. "
+              "Use --state-url to run more than one replica.", file=sys.stderr)
     command = args.upstream[1:] if args.upstream[:1] == ["--"] else args.upstream
     if not args.upstream_url and not command:
         print("give the app server: --upstream-url URL or -- <command>", file=sys.stderr)
@@ -132,6 +144,7 @@ def cmd_serve(args) -> int:
     gateway = Gateway(policy, upstream, state=state, audit=audit, approvals=approvals,
                       auto_demote=not args.no_auto_demote, obo=obo)
     audit.append("gateway_started", agent=policy.agent.id, transport=args.transport,
+                 state="shared" if args.state_url else "local",
                  autonomy_level=policy.agent.autonomy_level.value,
                  upstream_credential="on_behalf_of" if obo else "gateway_connection")
 
@@ -189,8 +202,6 @@ def _admin_client(base_url: str):
 
 
 def _remote(args, method: str, path: str, body: dict | None = None) -> tuple[int, Any]:
-    import os
-
     token = os.environ.get(args.token_env)
     if not token:
         print(f"set {args.token_env} to an operator access token from the IdP", file=sys.stderr)
@@ -340,13 +351,21 @@ def cmd_restore(args) -> int:
 
 
 def cmd_audit(args) -> int:
-    _, audit, _ = _state(args)
-    records = audit.read()
+    """Every chain in --state-dir: audit.jsonl and one audit-<replica>.jsonl per replica."""
+    files = sorted(Path(args.state_dir).glob("audit*.jsonl"))
+    chains = {f.name: AuditLog(f).read() for f in files}
     if args.verify:
-        ok, bad = verify(records)
-        print(f"audit chain OK ({len(records)} records)" if ok else f"audit chain BROKEN at seq {bad}")
-        return 0 if ok else 1
-    for r in records[-args.tail:]:
+        if not chains:
+            print(f"no audit logs in {args.state_dir}")
+            return 1
+        failed = 0
+        for name, records in chains.items():
+            ok, bad = verify(records)
+            failed += not ok
+            print(f"{name}: chain OK ({len(records)} records)" if ok else f"{name}: chain BROKEN at seq {bad}")
+        return 1 if failed else 0
+    merged = sorted((r for records in chains.values() for r in records), key=lambda r: r.get("ts", 0))
+    for r in merged[-args.tail:]:
         print(json.dumps(r, default=str))
     return 0
 
@@ -356,7 +375,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     gs = g.add_subparsers(dest="gateway_cmd", required=True)
 
     def with_state(p):
-        p.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help="durable state + audit log")
+        p.add_argument("--state-dir", default=DEFAULT_STATE_DIR, help="audit logs (and state, without --state-url)")
+        p.add_argument("--state-url", default=os.environ.get("AOF_STATE_URL"),
+                       help="shared state for several replicas, e.g. rediss://redis:6380/0 (env AOF_STATE_URL)")
         return p
 
     def operator(p):
@@ -381,6 +402,9 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--no-admin", action="store_true", help="http: do not serve the /admin operator API")
     s.add_argument("--public-url", help="http: this gateway's public /mcp URL")
     s.add_argument("--no-auto-demote", action="store_true")
+    s.add_argument("--replica-id", default=os.environ.get("AOF_REPLICA_ID"),
+                   help="this replica's name: its audit chain is audit-<id>.jsonl (default with --state-url: "
+                        "the host name)")
     s.add_argument("--no-llm", action="store_true", help="http: do not serve /v1/messages")
     s.add_argument("--no-a2a", action="store_true", help="http: do not serve the A2A routes")
     s.add_argument("--token-endpoint", help="http: IdP token endpoint for on-behalf-of exchange "

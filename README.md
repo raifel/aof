@@ -1,7 +1,7 @@
 # AOF: Agentic Onboarding Framework, contract kit
 
 This kit implements the app-facing part of the
-[AOF reference design](https://claude.ai/artifact/PtqoNQdMNX3iw3oA8RF2Ta). An app is
+[AOF reference design](docs/AOF-Reference-Design.pdf). An app is
 onboarded when its repo holds the seven contract artefacts and `aof validate` passes.
 The policy compiler then turns its tool manifest into the policy the shared agent
 gateway enforces on every call.

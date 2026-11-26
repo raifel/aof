@@ -117,7 +117,7 @@ class Gateway:
                 span.set_error(verdict.code)
                 self.audit.append("tool_denied", **base, code=verdict.code, reason=verdict.reason)
                 if verdict.violation:
-                    self._record_violation(now)
+                    self.record_violation(now)
                 return ToolResult(_deny_payload(verdict), is_error=True)
 
             if verdict.action is Action.APPROVAL:
@@ -194,7 +194,7 @@ class Gateway:
         """Hook for the LLM path: model spend counts toward the per-run cost cap."""
         self.state.run(run_id, self.clock()).cost_usd += usd
 
-    def _record_violation(self, now: float) -> None:
+    def record_violation(self, now: float) -> None:
         key = (self.agent_id,)
         self.state.violations.add(key, now)
         slos = self.policy.slos

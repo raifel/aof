@@ -29,6 +29,11 @@ budgets:
   max_steps_per_run: 15
   max_cost_usd_per_run: 0.50
 
+llm:                         # model calls go through the gateway's /v1/messages
+  models: [claude-opus-5-5]
+  max_tokens: 16000
+  rate_limit: {calls: 30, per: minute}
+
 approvals:
   architecture_review: {by: arch-review-board, date: 2026-10-02, ref: ARCH-412}
   # review_board: required before promotion because the app is T3

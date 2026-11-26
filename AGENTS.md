@@ -15,5 +15,6 @@ uv venv && uv pip install --python .venv/bin/python -e '.[dev,gateway]'
 - AOF-owned schemas use `Strict` (unknown keys fail). Schemas that mirror external specs (MCP Registry, A2A) use `Open`.
 - Platform numbers belong in `src/aof/platform.yaml`, never hard-coded in checks.
 - The template in `src/aof/templates/app` must keep passing `aof validate` after `aof init` (tested).
-- Gateway: keep `engine.py` free of I/O and transport code; MCP specifics belong in `mcp_proxy.py`.
+- Gateway: keep `engine.py` free of I/O and transport code; MCP specifics belong in `mcp_proxy.py`, Claude API specifics in `llm.py` (official `anthropic` SDK only, behind the `LlmProvider` protocol).
+- Model prices live in `platform.yaml` under `llm.pricing_usd_per_mtok`. Tests never call the real API: use `FakeProvider` or the in-process fake Messages API in `tests/test_gateway_llm.py`.
 - Every gateway decision must be written to the audit log, and a denial must return a stable `error` code the model can act on.

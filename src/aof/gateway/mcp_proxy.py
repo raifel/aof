@@ -135,15 +135,22 @@ async def serve_stdio(gateway: Gateway, upstream: McpUpstream, principal: Princi
 
 
 def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_url: str,
-             public_url: str, host: str = "127.0.0.1"):
-    """A Starlette app; the upstream connection lives for the app's lifetime."""
+             public_url: str, host: str = "127.0.0.1", llm_proxy=None):
+    """A Starlette app: /mcp for tools and, with an LlmProxy, /v1/messages for model calls.
+    The upstream connection lives for the app's lifetime."""
     from mcp.server.auth.settings import AuthSettings
 
+    routes = []
+    if llm_proxy is not None:
+        from .llm import llm_route
+
+        routes.append(llm_route(llm_proxy, token_verifier))
     server = build_server(gateway, token_principal)
     app = server.streamable_http_app(
         host=host,
         token_verifier=token_verifier,
         auth=AuthSettings(issuer_url=issuer_url, resource_server_url=public_url),
+        custom_starlette_routes=routes,
     )
     inner = app.router.lifespan_context
 

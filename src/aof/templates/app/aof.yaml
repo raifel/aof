@@ -25,6 +25,11 @@ mcp_server:
 
 budgets: {}                    # optional; may only tighten the platform ceilings
 
+# llm:                         # route model calls through the gateway's /v1/messages
+#   models: [claude-opus-5-5]   # empty = platform default
+#   max_tokens: 16000
+#   rate_limit: {calls: 60, per: minute}
+
 approvals: {}
   # architecture_review: {by: "arch-review", date: 2026-01-01, ref: "ARCH-123"}
   # review_board:        {by: "ai-review-board", date: 2026-01-01, ref: "AIRB-45"}

@@ -121,6 +121,30 @@ aof gateway audit --verify
 Callers can set `_meta["aof/run_id"]` (budgets are counted per run; the default is the
 MCP session) and `_meta["aof/delegation_depth"]` for A2A hops.
 
+### Model calls (`POST /v1/messages`)
+
+When the app's `aof.yaml` has an `llm:` block, the HTTP gateway also serves the
+Anthropic Messages API at `/v1/messages`. Agents point the official SDK at the gateway
+and use their gateway token as the API key; the gateway calls Claude with its own
+credential (`ANTHROPIC_API_KEY` or an `ant` profile in the gateway's environment), so
+agents never hold a provider key.
+
+```python
+client = anthropic.AsyncAnthropic(base_url="http://127.0.0.1:8765", api_key=GATEWAY_TOKEN,
+                                  default_headers={"x-aof-run-id": run_id})
+```
+
+Each call is checked, in order: kill switch, model allowlist (`aof:default` picks the
+agent's first model), `max_tokens` cap, beta allowlist, fallbacks that stay inside the
+allowlist, no API-side MCP connector, client tools must be tools this agent may call at
+its current level, server tools must be allow-listed, then per-run model-call, cost and
+delegation budgets and a per-user rate limit. Denials come back as Anthropic-shaped
+errors with `[AOF:<CODE>]` in the message, so the SDK raises its usual typed exception.
+Streaming is passed through. Cost is computed from `usage` x the prices in
+`platform.yaml` (unknown models are charged at the highest listed price) and is added to
+the same per-run budget as tool calls. The audit log records token counts and cost, never
+prompt or response content. `--no-llm` turns the endpoint off.
+
 ## Layout
 
 ```
@@ -143,8 +167,12 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 
 ## Not built yet
 
-- **LLM and A2A paths through the gateway.** Today it governs tool calls. Model spend
-  enters only through `Gateway.record_model_cost`, and A2A depth only through `_meta`.
+- **A2A path through the gateway.** A2A depth enters only through `_meta` and the
+  `x-aof-delegation-depth` header.
+- **LLM path limits.** Anthropic only. Budgets are checked before a call, so one call can
+  overshoot the cost cap. Long-context and regional price premiums are not modelled;
+  check `platform.yaml` prices against the pricing page. No `count_tokens` or batches
+  endpoints. The model-call rate limit is per process.
 - **On-behalf-of token exchange to the upstream app.** The gateway checks the user's
   scopes, but it calls the app over its own connection.
 - **Production identity.** `StaticTokenVerifier` is for development only. Plug in a JWT

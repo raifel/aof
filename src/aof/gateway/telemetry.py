@@ -42,6 +42,27 @@ class _Span:
 
 
 @contextlib.contextmanager
+def llm_span(model: str, *, agent_id: str, run_id: str, user_id: str, stream: bool) -> Iterator[Any]:
+    """Gateway span around a model call. Token usage lives on the Anthropic SDK's own
+    anthropic.messages.create span (a child of this one), so it is not repeated here."""
+    if _tracer is None:
+        yield _NoSpan()
+        return
+    attrs = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.request.model": model,
+        "gen_ai.agent.id": agent_id,
+        "aof.run_id": run_id,
+        "aof.stream": stream,
+        "enduser.id": user_id,
+    }
+    with _tracer.start_as_current_span(f"aof.gateway.chat {model}", kind=SpanKind.INTERNAL,
+                                       attributes=attrs) as span:
+        yield _Span(span)
+
+
+@contextlib.contextmanager
 def tool_span(tool: str, *, agent_id: str, call_id: str | None, run_id: str, user_id: str) -> Iterator[Any]:
     if _tracer is None:
         yield _NoSpan()

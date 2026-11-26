@@ -80,9 +80,22 @@ def cmd_serve(args) -> int:
 
     from .identity import StaticTokenVerifier
 
+    llm_proxy = None
+    if policy.llm is not None and not args.no_llm:
+        try:
+            from .llm import AnthropicProvider, LlmProxy
+
+            llm_proxy = LlmProxy(gateway, AnthropicProvider())
+        except ImportError:
+            print("policy has an llm section but the anthropic SDK is missing: pip install 'aof[gateway]'",
+                  file=sys.stderr)
+            return 2
     public_url = args.public_url or f"http://{args.host}:{args.port}/mcp"
     app = http_app(gateway, upstream, StaticTokenVerifier(args.tokens), issuer_url=args.issuer_url,
-                   public_url=public_url, host=args.host)
+                   public_url=public_url, host=args.host, llm_proxy=llm_proxy)
+    if llm_proxy:
+        print(f"model calls: POST http://{args.host}:{args.port}/v1/messages "
+              f"(models: {', '.join(policy.llm.models)})", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -188,6 +201,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--issuer-url", default="http://127.0.0.1:9000", help="http: OAuth issuer")
     s.add_argument("--public-url", help="http: this gateway's public /mcp URL")
     s.add_argument("--no-auto-demote", action="store_true")
+    s.add_argument("--no-llm", action="store_true", help="http: do not serve /v1/messages")
     s.add_argument("upstream", nargs=argparse.REMAINDER, help="-- <app server command>")
     s.set_defaults(fn=cmd_serve)
 

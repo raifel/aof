@@ -65,6 +65,20 @@ class Artefacts(Strict):
     runbook: str = "RUNBOOK.md"
 
 
+class LlmRateLimit(Strict):
+    calls: PositiveInt
+    per: str = Field(pattern=r"^(second|minute|hour|day)$")
+
+
+class LlmConfig(Strict):
+    """Model calls this agent makes through the gateway (POST /v1/messages)."""
+
+    models: list[str] = []  # empty = the platform default model only
+    max_tokens: PositiveInt = 16000  # per-request cap
+    rate_limit: LlmRateLimit = LlmRateLimit(calls=60, per="minute")  # per user
+    allowed_server_tools: list[str] = []  # subset of the platform's list
+
+
 class Approvals(Strict):
     architecture_review: Signoff | None = None  # pattern + autonomy level sign-off
     review_board: Signoff | None = None  # required for T3 apps and L3+ promotion
@@ -80,5 +94,6 @@ class Project(Strict):
     hosts_agent: bool = False  # app exposes its own agent over A2A
     mcp_server: McpServerRef
     budgets: Budgets = Budgets()
+    llm: LlmConfig | None = None  # set to route model calls through the gateway
     approvals: Approvals = Approvals()
     artefacts: Artefacts = Artefacts()

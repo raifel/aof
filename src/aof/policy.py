@@ -135,11 +135,56 @@ def check_policy(project: Project, manifest: ToolManifest, platform: PlatformCon
             out.append(error("AOF-P025", "aof.yaml",
                              f"budgets.{name}={app_v} exceeds the platform ceiling {plat_v}"))
 
+    out.extend(_check_llm(project, platform))
+
     if platform.telemetry.genai_semconv_version == "PIN_ME":
         out.append(warning("AOF-P030", "platform.yaml",
                            "OTel GenAI semconv version is not pinned",
                            "platform team: pin telemetry.genai_semconv_version"))
     return out
+
+
+def _check_llm(project: Project, platform: PlatformConfig) -> list[Finding]:
+    if project.llm is None:
+        return []
+    if platform.llm is None:
+        return [error("AOF-P040", "aof.yaml", "the platform does not offer model calls through the gateway")]
+    cfg, plat, out = project.llm, platform.llm, []
+    for m in cfg.models or [plat.default_model]:
+        if m not in plat.allowed_models:
+            out.append(error("AOF-P040", "aof.yaml", f"model {m} is not in the platform's allowed_models",
+                             f"choose from {', '.join(plat.allowed_models)}"))
+        elif m not in plat.pricing_usd_per_mtok:
+            out.append(warning("AOF-P043", "platform.yaml",
+                               f"no price for {m}: the gateway charges it at the highest listed price"))
+    if cfg.max_tokens > plat.max_tokens_ceiling:
+        out.append(error("AOF-P041", "aof.yaml",
+                         f"llm.max_tokens {cfg.max_tokens} exceeds the platform ceiling {plat.max_tokens_ceiling}"))
+    for t in cfg.allowed_server_tools:
+        if t not in plat.allowed_server_tools:
+            out.append(error("AOF-P042", "aof.yaml", f"server tool {t} is not allowed by the platform"))
+    return out
+
+
+def _compile_llm(project: Project, platform: PlatformConfig) -> dict[str, Any] | None:
+    if project.llm is None or platform.llm is None:
+        return None
+    cfg, plat = project.llm, platform.llm
+    models = cfg.models or [plat.default_model]
+    return {
+        "provider": plat.provider,
+        "models": models,
+        "default_model": models[0],
+        "max_tokens": cfg.max_tokens,
+        "max_model_calls_per_run": plat.max_model_calls_per_run,
+        "rate_limit": cfg.rate_limit.model_dump(),
+        "allowed_betas": plat.allowed_betas,
+        "allowed_server_tools": cfg.allowed_server_tools,
+        "pricing_usd_per_mtok": {m: p.model_dump(exclude_none=True)
+                                 for m, p in plat.pricing_usd_per_mtok.items()},
+        "cache_write_multiplier": plat.cache_write_multiplier,
+        "fast_mode_multiplier": plat.fast_mode_multiplier,
+    }
 
 
 # --------------------------------------------------------------------------- compile
@@ -247,4 +292,5 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             **platform.slos.model_dump(),
             "on_breach": "demote_one_autonomy_level",
         },
+        "llm": _compile_llm(project, platform),
     }

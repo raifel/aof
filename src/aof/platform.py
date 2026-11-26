@@ -63,6 +63,25 @@ class SlosCfg(Strict):
     max_policy_violations: int = Field(ge=0)
 
 
+class Price(Strict):
+    input: float = Field(ge=0)
+    output: float = Field(ge=0)
+    cache_read: float | None = Field(default=None, ge=0)
+
+
+class LlmCfg(Strict):
+    provider: str = "anthropic"
+    default_model: str
+    allowed_models: list[str]
+    max_tokens_ceiling: PositiveInt
+    max_model_calls_per_run: PositiveInt
+    allowed_betas: list[str] = []
+    allowed_server_tools: list[str] = []
+    pricing_usd_per_mtok: dict[str, Price]
+    cache_write_multiplier: float = 1.25
+    fast_mode_multiplier: float = 2.0
+
+
 class PlatformConfig(Strict):
     version: str
     registry: RegistryCfg
@@ -74,6 +93,7 @@ class PlatformConfig(Strict):
     eval_thresholds: dict[RiskTier, Thresholds]
     pilot: PilotCfg
     slos: SlosCfg
+    llm: LlmCfg | None = None
 
 
 def load_platform(path: str | Path | None = None) -> PlatformConfig:

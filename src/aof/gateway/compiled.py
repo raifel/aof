@@ -62,6 +62,26 @@ class SloRule(_M):
     max_policy_violations: int = 0
 
 
+class PriceRule(_M):
+    input: float
+    output: float
+    cache_read: float | None = None
+
+
+class LlmRule(_M):
+    provider: str = "anthropic"
+    models: list[str]
+    default_model: str
+    max_tokens: int
+    max_model_calls_per_run: int
+    rate_limit: RateLimitRule | None = None
+    allowed_betas: list[str] = []
+    allowed_server_tools: list[str] = []
+    pricing_usd_per_mtok: dict[str, PriceRule] = {}
+    cache_write_multiplier: float = 1.25
+    fast_mode_multiplier: float = 2.0
+
+
 class CompiledPolicy(_M):
     aof_policy_version: str
     default: Literal["deny"]
@@ -69,6 +89,7 @@ class CompiledPolicy(_M):
     budgets: BudgetRule
     tools: list[ToolRule]
     slos: SloRule = SloRule()
+    llm: LlmRule | None = None
 
     def rule(self, tool: str) -> ToolRule | None:
         return next((t for t in self.tools if t.name == tool), None)

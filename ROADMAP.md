@@ -64,6 +64,14 @@ and [docs/deployment.md](docs/deployment.md). Ordered by risk.
 | 4.9 | mTLS between gateways and signed agent card verification | A2A relies on edge TLS and an unsigned card | medium |
 | 4.10 | Optional guardrail hook for content (prompt-injection and output checks) | the gateway limits blast radius but doesn't inspect content | medium |
 
+## 4b. Data safety and natural-language queries (planned)
+
+Plan: [docs/data-safety.md](docs/data-safety.md). Business data stays out of the model
+(result vault, handles, tokenised ids, egress guard), and text-to-SQL for accounting runs
+behind a gateway-side SQL guard. Phases D1–D7 and open decisions DS1–DS7 are tracked there.
+D1 (schema and rules) and D4 (query IR and SQL guard) are done. D2 (result vault and wiring
+the guard into the gateway) is next; until then nothing is enforced at run time.
+
 ## 5. Known limits to revisit later
 
 See "Not built yet" in the README for the full list. The ones most likely to matter first:
@@ -86,3 +94,4 @@ in progress.
 - [docs/deployment.md](docs/deployment.md): deployment and network diagrams, network policy
 - [docs/threat-model.md](docs/threat-model.md): STRIDE by trust boundary, OWASP ASI mapping, residual risks
 - [docs/observability.md](docs/observability.md): audit events, integrity, traces, what to watch
+- [docs/data-safety.md](docs/data-safety.md): keeping data from the model, text-to-SQL (plan)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
-from ..enums import AutonomyLevel, Pattern, RiskTier
+from ..enums import AutonomyLevel, DataSafetyMode, Pattern, RiskTier
 from .base import Signoff, Strict
 
 
@@ -78,6 +78,15 @@ class LlmConfig(Strict):
     max_tokens: PositiveInt = 16000  # per-request cap
     rate_limit: LlmRateLimit = LlmRateLimit(calls=60, per="minute")  # per user
     allowed_server_tools: list[str] = []  # subset of the platform's list
+    # The app's model provider account has zero data retention (a contractual fact the
+    # app owner confirms; required when platform data_safety.provider says so, AOF-P073).
+    zero_data_retention: bool = False
+
+
+class DataSafetyConfig(Strict):
+    """What data the model may see. Unset: the platform's default_mode."""
+
+    mode: DataSafetyMode | None = None
 
 
 class A2aPeer(Strict):
@@ -116,5 +125,6 @@ class Project(Strict):
     budgets: Budgets = Budgets()
     llm: LlmConfig | None = None  # set to route model calls through the gateway
     a2a: A2aConfig | None = None  # set to route agent-to-agent calls through the gateway
+    data_safety: DataSafetyConfig = DataSafetyConfig()
     approvals: Approvals = Approvals()
     artefacts: Artefacts = Artefacts()

@@ -12,19 +12,22 @@ checks use the *requested* level (`autonomy.target`). Autonomy is earned.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from . import CONTRACT_VERSION
 from .enums import (
     Access,
     ApprovalMode,
     AutonomyLevel,
+    DataSafetyMode,
     READ_ONLY_LEVELS,
     Reversibility,
     RiskTier,
 )
 from .findings import Finding, error, info, warning
 from .models import Project, Tool, ToolManifest
+from .datasafety import views_from_contracts
+from .models.data_contract import DataContract
 from .models.project import A2aConfig
 from .platform import PlatformConfig
 
@@ -138,6 +141,7 @@ def check_policy(project: Project, manifest: ToolManifest, platform: PlatformCon
 
     out.extend(_check_llm(project, platform))
     out.extend(_check_a2a(project))
+    out.extend(_check_data_safety(project, manifest, platform))
     ident = platform.identity
     for name in ("issuer", "jwks_uri"):
         url = getattr(ident, name)
@@ -180,6 +184,57 @@ def _check_llm(project: Project, platform: PlatformConfig) -> list[Finding]:
         if t not in plat.allowed_server_tools:
             out.append(error("AOF-P042", "aof.yaml", f"server tool {t} is not allowed by the platform"))
     return out
+
+
+def data_safety_mode(project: Project, platform: PlatformConfig) -> DataSafetyMode:
+    return project.data_safety.mode or platform.data_safety.default_mode
+
+
+def _check_data_safety(project: Project, manifest: ToolManifest, platform: PlatformConfig) -> list[Finding]:
+    ds, out = platform.data_safety, []
+    if project.risk_tier >= ds.metadata_only_from_tier and data_safety_mode(project, platform) is not DataSafetyMode.METADATA_ONLY:
+        out.append(error("AOF-P074", "aof.yaml",
+                         f"{project.risk_tier.value} apps must use data_safety.mode: metadata_only",
+                         f"the platform requires it from {ds.metadata_only_from_tier.value}"))
+    if project.llm is not None and ds.provider.zero_data_retention == "required" and not project.llm.zero_data_retention:
+        out.append(error("AOF-P073", "aof.yaml", "the platform requires zero data retention with the model provider",
+                         "confirm the provider account's terms, then set llm.zero_data_retention: true"))
+    lim = ds.query
+    for t in manifest.tools:
+        q = t.query
+        if q is None:
+            continue
+        where = f"{A}:{t.name}"
+        if t.access is not Access.READ:
+            out.append(error("AOF-P072", where, "query tools are read tools; writes never go through a query"))
+        missing = [n for n in ("max_rows", "timeout_seconds", "max_bytes_scanned") if getattr(q, n) is None]
+        if missing:
+            out.append(error("AOF-P070", where, f"query tool must declare query.{', query.'.join(missing)}"))
+        for name, ceiling in (("max_rows", lim.max_rows_ceiling), ("timeout_seconds", lim.timeout_seconds_ceiling),
+                              ("max_bytes_scanned", lim.max_bytes_scanned_ceiling)):
+            value = getattr(q, name)
+            if value is not None and value > ceiling:
+                out.append(error("AOF-P075", where, f"query.{name}={value} exceeds the platform ceiling {ceiling}"))
+        mode = t.approval.mode if t.approval else None
+        if q.form == "sql" and project.risk_tier >= RiskTier.T3 and mode is not ApprovalMode.PER_ACTION:
+            out.append(error("AOF-P071", where, "raw SQL in a T3 app needs per_action approval",
+                             "use form: ir (semantic queries), or approve each query"))
+    return out
+
+
+def _compile_data_safety(project: Project, manifest: ToolManifest, platform: PlatformConfig,
+                         contracts: Iterable[DataContract]) -> dict[str, Any]:
+    ds = platform.data_safety
+    mode = data_safety_mode(project, platform)
+    views = views_from_contracts(contracts, ds.default_exposure, mode)
+    return {
+        "mode": mode.value,
+        "views": {name: v.model_dump(mode="json", exclude_defaults=True) for name, v in views.items()},
+        "min_group_size": ds.min_group_size,
+        "row_count_buckets": ds.row_count_buckets,
+        "row_filter_claims": ds.row_filter_claims,
+        "allowed_functions": ds.query.allowed_functions,
+    }
 
 
 def _check_a2a(project: Project) -> list[Finding]:
@@ -253,7 +308,8 @@ def _effective_budgets(project: Project, platform: PlatformConfig) -> dict[str, 
     return out
 
 
-def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformConfig) -> dict[str, Any]:
+def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformConfig,
+                   contracts: Iterable[DataContract] = ()) -> dict[str, Any]:
     errors = [f for f in check_policy(project, manifest, platform) if f.severity.value == "error"]
     if errors:
         raise PolicyError(errors)
@@ -289,6 +345,8 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             entry["reversibility"] = t.reversibility.value
         if t.executes_code:
             entry["sandbox"] = True
+        if t.query:
+            entry["query"] = t.query.model_dump()
         tools.append(entry)
 
     return {
@@ -342,4 +400,5 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             "on_breach": "demote_one_autonomy_level",
         },
         "llm": _compile_llm(project, platform),
+        "data_safety": _compile_data_safety(project, manifest, platform, contracts),
     }

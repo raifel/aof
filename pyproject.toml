@@ -11,8 +11,9 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.0"]
-gateway = ["mcp>=2.0", "anthropic>=2.0", "httpx2>=2.0", "pyjwt[crypto]>=2.8", "redis>=5.0", "opentelemetry-api>=1.30", "uvicorn>=0.30"]
-dev = ["pytest>=8", "a2a-sdk[http-server]>=1.3", "fakeredis>=2.20"]  # a2a-sdk: end-to-end A2A tests only
+query = ["sqlglot>=30"]  # aof.query: semantic queries and the SQL guard
+gateway = ["mcp>=2.0", "anthropic>=2.0", "httpx2>=2.0", "pyjwt[crypto]>=2.8", "redis>=5.0", "opentelemetry-api>=1.30", "uvicorn>=0.30", "sqlglot>=30"]
+dev = ["pytest>=8", "a2a-sdk[http-server]>=1.3", "fakeredis>=2.20", "duckdb>=1.1"]  # a2a-sdk: end-to-end A2A tests only; duckdb: query tests
 
 [project.scripts]
 aof = "aof.cli:main"

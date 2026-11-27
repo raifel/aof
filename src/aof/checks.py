@@ -6,7 +6,7 @@ import re
 
 from pydantic import ValidationError
 
-from .enums import ASI_RISKS, AutonomyLevel, Classification, RiskTier
+from .enums import ASI_RISKS, AutonomyLevel, Classification, Exposure, RiskTier
 from .findings import Finding, Report, error, info, warning
 from .lint import lint_manifest
 from .loader import LoadedProject
@@ -14,6 +14,7 @@ from .models import AofRegistryMeta
 from .models.evals import REQUIRED_METRICS
 from .platform import PlatformConfig
 from .policy import check_policy
+from .datasafety import effective_classification
 
 SEMVER = re.compile(r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$")
 
@@ -102,6 +103,86 @@ def check_data_contracts(lp: LoadedProject) -> list[Finding]:
                     out.append(error("AOF-C024", f"tools.manifest:{t.name}",
                                      f"reads {r!r} but no data contract declares that semantic view",
                                      "agents read only through governed data products"))
+    return out
+
+
+_NUMERIC = re.compile(r"^(number|numeric|decimal|int|integer|bigint|smallint|float|double|real)\b", re.I)
+
+
+def check_data_safety(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:
+    """Field exposure, row filters, semantic model and query tools (docs/data-safety.md)."""
+    out: list[Finding] = []
+    ds = platform.data_safety
+    claims = {"sub", *ds.row_filter_claims}
+    if platform.identity.tenant_claim:
+        claims.add("tenant")
+    by_view = {dc.semantic_view: dc for dc in lp.data_contracts}
+
+    for dc in lp.data_contracts:
+        where = f"data-contract:{dc.name}"
+        for f in dc.fields:
+            cls = effective_classification(f)
+            declared = f.llm_exposure
+            if declared is not None and f.pii and declared > Exposure.TOKEN:
+                out.append(error("AOF-C071", where, f"PII field {f.name} is exposed as {declared.value}",
+                                 "PII reaches the model at most as a token"))
+            elif declared is not None and declared > ds.exposure_ceiling[cls]:
+                out.append(error("AOF-C070", where,
+                                 f"field {f.name} is {cls.value}; llm_exposure {declared.value} exceeds the "
+                                 f"platform ceiling {ds.exposure_ceiling[cls].value}"))
+            exposure = declared or ds.default_exposure[cls]
+            if f.free_text and exposure > Exposure.NONE and dc.classification >= Classification.INTERNAL:
+                out.append(error("AOF-C072", where,
+                                 f"free-text field {f.name} must be llm_exposure: none",
+                                 "free text leaks data and carries prompt injection"))
+
+        for rf in dc.row_filter:
+            if dc.field(rf.column) is None:
+                out.append(error("AOF-C073", where, f"row_filter column {rf.column} is not a field"))
+            if rf.claim not in claims:
+                out.append(error("AOF-C073", where, f"row_filter claim {rf.claim!r} is not mapped",
+                                 "use sub, tenant, or add it to platform data_safety.row_filter_claims"))
+
+        names: list[str] = []
+        for m in dc.measures:
+            names.append(m.name)
+            f = dc.field(m.field) if m.field else None
+            if m.field and f is None:
+                out.append(error("AOF-C074", where, f"measure {m.name}: unknown field {m.field}"))
+            elif f is not None and m.agg in ("sum", "avg") and not _NUMERIC.match(f.type):
+                out.append(error("AOF-C074", where, f"measure {m.name}: {m.agg} needs a numeric field, "
+                                                    f"{f.name} is {f.type}"))
+            for c in m.filter:
+                if dc.field(c.column) is None:
+                    out.append(error("AOF-C074", where, f"measure {m.name}: filter column {c.column} is not a field"))
+        for d in dc.dimensions:
+            names.append(d.name)
+            if dc.field(d.field) is None:
+                out.append(error("AOF-C074", where, f"dimension {d.name}: unknown field {d.field}"))
+        if sum(d.time for d in dc.dimensions) > 1:
+            out.append(error("AOF-C074", where, "at most one dimension may be time: true"))
+        for n in sorted({n for n in names if names.count(n) > 1}):
+            out.append(error("AOF-C074", where, f"{n} is declared more than once in measures and dimensions"))
+
+    for t in lp.manifest.tools if lp.manifest else []:
+        if t.query is None:
+            continue
+        where = f"tools.manifest:{t.name}"
+        p = t.params.get(t.query.param)
+        if p is None or p.type not in ("string", "object"):
+            out.append(error("AOF-C076", where,
+                             f"query.param {t.query.param!r} must be a string or object parameter of the tool"))
+        if not t.reads:
+            out.append(error("AOF-C076", where, "a query tool must declare the views it reads"))
+        for r in t.reads:
+            dc = by_view.get(r)
+            if dc is None:
+                continue  # AOF-C024
+            if lp.project.app.user_facing and not dc.row_filter:
+                out.append(error("AOF-C075", where, f"view {r} has no row_filter",
+                                 "a user-facing query tool reads only rows the user may see"))
+            if t.query.form == "ir" and not dc.measures:
+                out.append(warning("AOF-C077", where, f"view {r} declares no measures for semantic queries"))
     return out
 
 
@@ -208,6 +289,7 @@ def validate(lp: LoadedProject, platform: PlatformConfig) -> Report:
     report.extend(check_mcp_server(lp))
     report.extend(check_registry(lp, platform))
     report.extend(check_data_contracts(lp))
+    report.extend(check_data_safety(lp, platform))
     report.extend(check_agent_card(lp))
     report.extend(check_evals_static(lp, platform))
     report.extend(check_docs(lp))

@@ -60,6 +60,8 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P021 / P022 | L0–L1 targets have no write tools; at L2 every write is `per_action` |
 | P023 | L4 requires an A2A agent card |
 | P025 | App budgets may only tighten the platform's |
+| P070–P075 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only` |
+| C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
 
 The compiled policy defaults to deny. It enforces the **approved** level (`autonomy.current`),
 not the requested one, so writes stay denied until promotion. T4 tools always compile to deny.
@@ -338,6 +340,8 @@ src/aof/
   platform.yaml  platform-owned thresholds and budgets
   templates/app  `aof init` scaffold: a read-only L0/T1 lighthouse app
   evalrun.py     `aof eval`: cases through the gateway, scored from its record
+  datasafety.py  field exposure and view schemas (docs/data-safety.md)
+  query/         semantic queries and the SQL guard (pure; needs the `query` extra)
   gateway/
     engine.py      per-call decision (pure)       approvals.py  one approval per action
     core.py        Gateway.call_tool orchestration audit.py      hash-chained audit log
@@ -350,7 +354,8 @@ examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on revie
 
 The pending steps, decisions and what each needs are tracked in [ROADMAP.md](ROADMAP.md).
 Design documents: [architecture](docs/architecture.md), [deployment and network](docs/deployment.md),
-[threat model](docs/threat-model.md), [observability and audit](docs/observability.md).
+[threat model](docs/threat-model.md), [observability and audit](docs/observability.md),
+[data safety and text-to-SQL](docs/data-safety.md) (plan).
 
 - **A2A path limits.** JSON-RPC binding only (no HTTP+JSON or gRPC). No mTLS between
   gateways (terminate it in front) and no agent card signature verification yet. A2A

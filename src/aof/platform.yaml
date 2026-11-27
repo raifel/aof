@@ -76,3 +76,34 @@ llm:                                   # model calls through the gateway (POST /
     claude-haiku-5-5:  {input: 0.10, output: 0.50}
   cache_write_multiplier: 1.25         # 5-minute cache writes
   fast_mode_multiplier: 2.0
+
+data_safety:                           # what data may reach the model (docs/data-safety.md)
+  default_mode: metadata_only          # metadata_only | contract; used when aof.yaml sets none
+  metadata_only_from_tier: T3          # apps at this tier or above must use metadata_only
+  default_exposure:                    # a field's llm_exposure when the contract sets none
+    public: allowed
+    internal: aggregate
+    confidential: none
+    restricted: none
+  exposure_ceiling:                    # the most a field of this classification may be exposed
+    public: allowed
+    internal: aggregate
+    confidential: token
+    restricted: none
+  min_group_size: 10                   # k: smallest group whose aggregate the model may see
+  row_count_buckets: [0, 1, 10, 100, 1000, 10000]
+  row_filter_claims: {}                # extra row-filter claims: name -> dotted token claim path
+  provider:
+    zero_data_retention: required      # required | recommended | not_required
+  query:                               # ceilings for query tools (tools.manifest `query:`)
+    max_rows_ceiling: 10000
+    timeout_seconds_ceiling: 60
+    max_bytes_scanned_ceiling: 50000000000
+    allowed_functions: [
+      SUM, COUNT, AVG, MIN, MAX, COUNT_IF,
+      ABS, ROUND, FLOOR, CEIL, COALESCE, NULLIF, IFNULL, NVL, IF, IFF, CASE, CAST, TRY_CAST,
+      DATE_TRUNC, TIMESTAMP_TRUNC, EXTRACT, YEAR, QUARTER, MONTH, DAY, DATE_PART, DATEADD,
+      DATE_ADD, DATEDIFF, DATE_DIFF, TO_DATE, CURRENT_DATE, LAST_DAY,
+      LOWER, UPPER, TRIM, CONCAT, SUBSTRING, SUBSTR, LEFT, RIGHT, LENGTH,
+      ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE,
+    ]

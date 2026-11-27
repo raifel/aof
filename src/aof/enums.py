@@ -119,6 +119,24 @@ class Classification(_Ordered):
     RESTRICTED = "restricted"
 
 
+class Exposure(_Ordered):
+    """How much of a field's value the model may see (data-safety plan, docs/data-safety.md).
+
+    Ordered from least to most exposed, so a ceiling is a simple comparison.
+    """
+
+    NONE = "none"            # column name and type only; values stay in the result vault
+    TOKEN = "token"          # a per-run token the gateway swaps back for the value
+    MASKED = "masked"        # a partial value (****1234, year only)
+    AGGREGATE = "aggregate"  # only aggregates over at least min_group_size rows
+    ALLOWED = "allowed"      # the value itself
+
+
+class DataSafetyMode(str, Enum):
+    METADATA_ONLY = "metadata_only"  # every field behaves as none or token
+    CONTRACT = "contract"            # each data contract opens fields up to the ceiling
+
+
 # OWASP Top 10 for Agentic Applications 2026 (published December 2025).
 ASI_RISKS: dict[str, str] = {
     "ASI01": "Agent goal hijack",

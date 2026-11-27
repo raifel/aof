@@ -119,7 +119,8 @@ def cmd_compile_policy(args: argparse.Namespace) -> int:
     if lp.project is None or lp.manifest is None:
         return _print_findings(lp.load_findings, False) or 1
     try:
-        policy = compile_policy(lp.project, lp.manifest, load_platform(args.platform))
+        policy = compile_policy(lp.project, lp.manifest, load_platform(args.platform),
+                                lp.data_contracts)
     except PolicyError as exc:
         print("Policy compile failed:\n", file=sys.stderr)
         _print_findings(exc.findings, False)

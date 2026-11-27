@@ -276,7 +276,7 @@ def eval_policy(lp: LoadedProject, platform: PlatformConfig, level: AutonomyLeve
     lvl = level or project.autonomy.target
     project.autonomy.current = lvl
     project.autonomy.target = max(project.autonomy.target, lvl)
-    return CompiledPolicy.model_validate(compile_policy(project, lp.manifest, platform))
+    return CompiledPolicy.model_validate(compile_policy(project, lp.manifest, platform, lp.data_contracts))
 
 
 @dataclass

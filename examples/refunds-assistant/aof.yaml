@@ -33,6 +33,7 @@ llm:                         # model calls go through the gateway's /v1/messages
   models: [claude-opus-5-5]
   max_tokens: 16000
   rate_limit: {calls: 30, per: minute}
+  zero_data_retention: true  # provider account has zero data retention (AOF-P073)
 
 approvals:
   architecture_review: {by: arch-review-board, date: 2026-10-02, ref: ARCH-412}

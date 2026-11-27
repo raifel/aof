@@ -40,6 +40,21 @@ class Approval(Strict):
     approver_role: str | None = None
 
 
+class QueryCfg(Strict):
+    """Marks a read tool that takes a query over its `reads` views (docs/data-safety.md).
+
+    The gateway checks the query in `param` before the call runs: semantic IR (`form: ir`)
+    or SQL (`form: sql`). Limits left unset fail the build (AOF-P070).
+    """
+
+    form: Literal["ir", "sql"] = "ir"
+    param: str = "query"  # the tool parameter that carries the query
+    dialect: str = "snowflake"  # sqlglot dialect of the warehouse
+    max_rows: PositiveInt | None = None
+    timeout_seconds: PositiveInt | None = None
+    max_bytes_scanned: PositiveInt | None = None
+
+
 class Tool(Strict):
     name: str
     description: str = ""
@@ -58,6 +73,7 @@ class Tool(Strict):
     executes_code: bool = False
     sandboxed: bool = False
     reads: list[str] = []  # semantic views / data products (must have data contracts)
+    query: QueryCfg | None = None  # set for tools that run a model-written query
     params: dict[str, Param] = {}
 
 

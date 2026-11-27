@@ -29,6 +29,10 @@ budgets: {}                    # optional; may only tighten the platform ceiling
 #   models: [claude-opus-5-5]   # empty = platform default
 #   max_tokens: 16000
 #   rate_limit: {calls: 60, per: minute}
+#   zero_data_retention: true  # confirm the provider account's terms (required by the platform)
+
+# data_safety:
+#   mode: metadata_only        # default; contract lets data contracts open fields (T1-T2 only)
 
 approvals: {}
   # architecture_review: {by: "arch-review", date: 2026-01-01, ref: "ARCH-123"}

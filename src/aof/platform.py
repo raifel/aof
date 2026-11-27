@@ -8,7 +8,9 @@ from pathlib import Path
 import yaml
 from pydantic import Field, PositiveFloat, PositiveInt
 
-from .enums import RiskTier
+from pydantic import model_validator
+
+from .enums import Classification, DataSafetyMode, Exposure, RiskTier
 from .models.base import Strict
 
 
@@ -90,6 +92,40 @@ class LlmCfg(Strict):
     fast_mode_multiplier: float = 2.0
 
 
+class QueryLimitsCfg(Strict):
+    max_rows_ceiling: PositiveInt
+    timeout_seconds_ceiling: PositiveInt
+    max_bytes_scanned_ceiling: PositiveInt
+    allowed_functions: list[str]  # SQL function names the guard accepts (upper case)
+
+
+class ProviderCfg(Strict):
+    zero_data_retention: str = Field(default="required", pattern=r"^(required|recommended|not_required)$")
+
+
+class DataSafetyCfg(Strict):
+    default_mode: DataSafetyMode = DataSafetyMode.METADATA_ONLY
+    metadata_only_from_tier: RiskTier = RiskTier.T3  # apps at this tier or above must use it
+    default_exposure: dict[Classification, Exposure]
+    exposure_ceiling: dict[Classification, Exposure]
+    min_group_size: PositiveInt = 10
+    row_count_buckets: list[int] = [0, 1, 10, 100, 1000, 10000]
+    row_filter_claims: dict[str, str] = {}  # name used in contracts -> dotted token claim path
+    provider: ProviderCfg = ProviderCfg()
+    query: QueryLimitsCfg
+
+    @model_validator(mode="after")
+    def _complete(self) -> "DataSafetyCfg":
+        for name in ("default_exposure", "exposure_ceiling"):
+            missing = set(Classification) - set(getattr(self, name))
+            if missing:
+                raise ValueError(f"data_safety.{name} lacks {sorted(c.value for c in missing)}")
+        for c, e in self.default_exposure.items():
+            if e > self.exposure_ceiling[c]:
+                raise ValueError(f"data_safety.default_exposure.{c.value} exceeds its ceiling")
+        return self
+
+
 class PlatformConfig(Strict):
     version: str
     registry: RegistryCfg
@@ -102,6 +138,7 @@ class PlatformConfig(Strict):
     pilot: PilotCfg
     slos: SlosCfg
     llm: LlmCfg | None = None
+    data_safety: DataSafetyCfg
 
 
 def load_platform(path: str | Path | None = None) -> PlatformConfig:

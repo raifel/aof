@@ -248,10 +248,21 @@ def check_ds8(project: Project, manifest: ToolManifest, platform: PlatformConfig
     """Exceptions (P077, P078) and verdicts (P079): how a value-blind agent still decides."""
     ds, out = platform.data_safety, []
     tools = {t.name: t for t in manifest.tools}
+    peers = {p.name: p for p in (project.a2a.peers if project.a2a else [])}
     for e in project.data_safety.exceptions:
         owner, key = e.field.split(".", 1)
         tool = tools.get(owner)
-        if tool is not None:
+        peer = peers.get(owner)
+        if peer is not None and tool is None:
+            declared = (Exposure.ALLOWED if peer.reply.text == "allowed" else Exposure.NONE) if key == "text" \
+                else peer.reply.data_keys.get(key)
+            if declared is None:
+                out.append(error("AOF-P077", "aof.yaml", f"exception {e.field}: peer {owner} declares no reply "
+                                                         f"key {key}"))
+            elif e.exposure > declared:
+                out.append(error("AOF-P078", "aof.yaml", f"exception {e.field} asks for {e.exposure.value}; the "
+                                                         f"peer's reply block allows {declared.value}"))
+        elif tool is not None:
             if key not in tool.result_keys:
                 out.append(error("AOF-P077", "aof.yaml", f"exception {e.field}: {owner} declares no result key {key}"))
             elif e.exposure > tool.result_keys[key]:
@@ -271,14 +282,15 @@ def check_ds8(project: Project, manifest: ToolManifest, platform: PlatformConfig
                                      f"exception {e.field} asks for {e.exposure.value}; the contract allows "
                                      f"{limit.value}", "an exception lifts metadata_only, not the contract or "
                                                        "the platform ceiling"))
-    for t in manifest.tools:
-        for name, v in t.verdicts.items():
-            where = f"tools.manifest:{t.name}"
+    owners = [(f"tools.manifest:{t.name}", t.verdicts, t.result_keys) for t in manifest.tools]
+    owners += [(f"aof.yaml:a2a.peers.{p.name}", p.reply.verdicts, p.reply.data_keys) for p in peers.values()]
+    for where, verdicts, keys in owners:
+        for name, v in verdicts.items():
             if v.type == "enum" and len(set(v.values)) > ds.max_verdict_values:
                 out.append(error("AOF-P079", where, f"verdict {name} has {len(set(v.values))} values; the platform "
                                                     f"allows {ds.max_verdict_values}",
                                  "a verdict is a decision, not a way to return the value"))
-            if name in t.result_keys:
+            if name in keys:
                 out.append(error("AOF-P079", where, f"{name} is both a verdict and a result key"))
     return out
 
@@ -319,6 +331,26 @@ def _check_a2a(project: Project) -> list[Finding]:
     for peer in cfg.peers:
         if not peer.card_url.startswith("https://"):
             out.append(error("AOF-P052", "aof.yaml", f"a2a peer {peer.name}: card_url must be https"))
+    return out
+
+
+def _clamp(owner: str, key: str, v: Exposure, project: Project, platform: PlatformConfig) -> Exposure:
+    """metadata_only keeps tokens only, unless the board signed an exception for owner.key."""
+    if data_safety_mode(project, platform) is not DataSafetyMode.METADATA_ONLY or v is Exposure.TOKEN:
+        return v
+    e = exposure_exceptions(project, platform).get(f"{owner}.{key}")
+    return min(e, v) if e is not None else Exposure.NONE
+
+
+def _compile_peer(peer, project: Project, platform: PlatformConfig) -> dict[str, Any]:
+    out = peer.model_dump(exclude={"reply"})
+    r = peer.reply
+    text = Exposure.ALLOWED if r.text == "allowed" else Exposure.NONE
+    out["reply"] = {
+        "text": _clamp(peer.name, "text", text, project, platform).value,
+        "data_keys": {k: _clamp(peer.name, k, v, project, platform).value for k, v in r.data_keys.items()},
+        "verdicts": {k: v.model_dump(exclude_defaults=True) | {"type": v.type} for k, v in r.verdicts.items()},
+    }
     return out
 
 
@@ -414,16 +446,8 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
         if t.query:
             entry["query"] = t.query.model_dump()
         if t.result_keys:
-            strict = data_safety_mode(project, platform) is DataSafetyMode.METADATA_ONLY
-            signed = exposure_exceptions(project, platform)
-
-            def clamp(k: str, v: Exposure) -> Exposure:  # metadata_only clamps these like contract fields
-                if not strict or v is Exposure.TOKEN:
-                    return v
-                e = signed.get(f"{t.name}.{k}")
-                return min(e, v) if e is not None else Exposure.NONE
-
-            entry["result_keys"] = {k: clamp(k, v).value for k, v in t.result_keys.items()}
+            entry["result_keys"] = {k: _clamp(t.name, k, v, project, platform).value  # like contract fields
+                                    for k, v in t.result_keys.items()}
         if t.verdicts:  # shown in every mode; the gateway drops values outside the type
             entry["verdicts"] = {k: v.model_dump(exclude_defaults=True) | {"type": v.type}
                                  for k, v in t.verdicts.items()}
@@ -467,7 +491,7 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             "max_delegation_depth": budgets["max_delegation_depth"],
             "max_delegations_per_run": a2a.max_delegations_per_run,
             "allowed_callers": a2a.allowed_callers,
-            "peers": [peer.model_dump() for peer in a2a.peers],
+            "peers": [_compile_peer(peer, project, platform) for peer in a2a.peers],
         },
         "memory": {"scope": "per_user_per_tenant", "provenance": True, "ttl_required": True},
         "kill_switch": {"enabled": True, "runbook": project.artefacts.runbook},

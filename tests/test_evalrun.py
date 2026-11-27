@@ -224,3 +224,27 @@ def test_without_a_judge_prose_cases_are_reported_ungraded(example):
     lp.safety_cases = []
     run = asyncio.run(run_suite(lp, load_platform(), upstream_for(example), ScriptedModel(example), judge=False))
     assert run.results["ungraded"] == 1 and run.results["task_success"] == 0.5
+
+
+def test_a_leaking_answer_is_never_sent_to_the_judge(example, monkeypatch):
+    """L6 (docs/data-safety.md): under results: enforce the judge is a model too."""
+    import yaml
+
+    import aof.evalrun as evalrun
+
+    path = example / "aof.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["data_safety"] = {"results": "enforce"}
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    monkeypatch.setattr(evalrun, "_answer_leaks", lambda gw, principal, final: 1)
+    graded = []
+
+    class Judge:
+        async def grade(self, *a):
+            graded.append(a)
+            return True, "ok"
+
+    run = asyncio.run(run_suite(load_project(example), load_platform(), upstream_for(example),
+                                ScriptedModel(example), judge=Judge(), limit=6))
+    g6 = next(o for o in run.outcomes if o.id == "g006")  # a prose expectation
+    assert graded == [] and g6.task_success is False and g6.judge_reason.startswith("not judged")

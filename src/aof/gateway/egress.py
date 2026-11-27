@@ -306,10 +306,12 @@ class EgressGuard:
         doc = self.vault.store.get(_FP_NS, self._fp_doc(principal)) if self.fingerprints else None
         return set((doc or {}).get("fps", []))
 
-    def hidden_hits(self, principal: Principal, text: str, known: set[str] | None = None) -> int:
-        """How many distinctive values from this user's vaulted results appear in `text`."""
+    def hidden_hits(self, principal: Principal, text: str, known: set[str] | None = None,
+                    said: set[str] = frozenset()) -> int:
+        """How many distinctive values from this user's vaulted results appear in `text`,
+        not counting values the user wrote themselves (`said`: their text keys)."""
         known = self._known(principal) if known is None else known
-        return sum(1 for k in text_keys(text) if self._fp(k) in known) if known else 0
+        return sum(1 for k in text_keys(text) if k not in said and self._fp(k) in known) if known else 0
 
     # ---- inspection
 
@@ -329,7 +331,10 @@ class EgressGuard:
 
         known = self._known(principal)
         if known:
-            hits = sum(self.hidden_hits(principal, s.text, known) for s in segs if s.origin != "user_text")
+            # A value the user typed in this conversation (an order id passed on to the next
+            # tool) reached the model from the user, not from a hidden result.
+            said = {k for s in segs if s.origin == "user_text" for k in text_keys(s.text)}
+            hits = sum(self.hidden_hits(principal, s.text, known, said) for s in segs if s.origin != "user_text")
             if hits:
                 findings["vault_fingerprint"] = hits
                 if enforce:

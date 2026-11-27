@@ -8,6 +8,7 @@ server. No network.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -321,7 +322,7 @@ class _Tokens:
         return AccessToken(token=token, client_id=who[0], scopes=[], subject=who[1])
 
 
-async def _e2e():
+async def _e2e(results=None):
     import httpx2
     from a2a.client import ClientConfig, create_client
     from a2a.helpers import get_artifact_text, new_text_message
@@ -342,6 +343,8 @@ async def _e2e():
             return await self.apps[request.url.host].handle_async_request(request)
 
     policy = a2a_policy()
+    if results:
+        policy.data_safety["results"] = results
     gw = Gateway(policy, FakeUpstream(policy))
     proxy = A2aProxy(gw, HttpTransport(httpx2.AsyncClient(transport=Router())), upstream_url=UPSTREAM,
                      public_url="http://gw/a2a", env={"BILLING_TOKEN": "peer-secret"})
@@ -360,6 +363,7 @@ async def _e2e():
     replies = [r async for r in client.send_message(pb.SendMessageRequest(message=new_text_message("ORD-1", role=pb.Role.ROLE_USER)))]
     task = replies[-1].task
     out_text = get_artifact_text(task.artifacts[0])
+    gw.sdk_task_metadata = dict(task.metadata)  # for the enforce test
 
     # inbound: the orchestrator calls the refunds agent through the gateway
     async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=gateway)) as http:
@@ -386,3 +390,13 @@ def test_end_to_end_with_a2a_sdk():
     assert "CALLER_NOT_ALLOWED" in str(denied)
     events = [r["event"] for r in gw.audit.read()]
     assert events.count("a2a_call") == 2 and events[-1] == "a2a_denied"
+
+
+def test_end_to_end_enforce_shapes_peer_replies_the_sdk_still_parses():
+    """D7: with results: enforce the peer's text is hidden, and the reply stays valid A2A."""
+    out_text, in_text, _, _, gw = asyncio.run(_e2e(results="enforce"))
+    handle = gw.sdk_task_metadata["aof_result_handle"]
+    assert out_text == f"[hidden by the gateway: {handle}]"
+    assert in_text == "refunds: status?"  # inbound: the caller's gateway applies its own rules
+    stored = gw.vault.get(handle, Principal.of("alice")).content
+    assert "billing: ORD-1" in json.dumps(stored)

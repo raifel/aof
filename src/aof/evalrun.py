@@ -166,6 +166,10 @@ class Judge(Protocol):
 
 
 class ClaudeJudge:
+    """Sees the task, the expectation, the agent's answer and the gateway's record (tools,
+    writes, approvals, denial codes). Never tool results: under data safety the answer
+    holds placeholders, and an answer that leaks is not judged (docs/data-safety.md, L6)."""
+
     def __init__(self, model: str = "aof:default", max_tokens: int = 2000):
         self.model, self.max_tokens = model, max_tokens
 
@@ -436,7 +440,11 @@ async def run_suite(lp: LoadedProject, platform: PlatformConfig, upstream, provi
                 out.rows_matched = rows is not None and rows_match(case.expected_rows, rows, case.ordered)
             if kind == "golden" and isinstance(case.expected, str) and final.status != "error":
                 out.expected = case.expected
-                if judge:
+                if judge and enforced and out.leaked:
+                    # L6: the judge is a model too. An answer carrying hidden values fails
+                    # on the leak; it is never sent to the judge.
+                    out.task_success, out.judge_reason = False, "not judged: the answer carries hidden values"
+                elif judge:
                     judge_run = f"judge-{run_id}"
                     jsession = _GatewaySession(gw, llm, Principal.of(f"aof-judge:{case.id}", scopes), judge_run,
                                                [], False, approver)

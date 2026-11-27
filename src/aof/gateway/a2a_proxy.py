@@ -8,7 +8,13 @@ Inbound (another agent calls this app's agent):
 
 Both directions speak A2A 1.0 JSON-RPC (SendMessage, GetTask, ...) and accept the 0.3
 method names (message/send, tasks/get, ...). The gateway passes payloads through
-unchanged; it reads only the method, task ids and the agent card.
+unchanged; it reads only the method, task ids and the agent card. One exception (D7,
+docs/data-safety.md): with `data_safety.results: enforce`, a peer's reply to this app's
+agent is vaulted whole, and the agent gets the same JSON-RPC shape with only what the
+peer's `reply:` block allows: text parts if `text: allowed`, declared data keys and
+verdicts. Everything else becomes "[hidden by the gateway: res_…]", the handle goes in
+`result.metadata.aof_result_handle`, and a peer error keeps its code but not its message.
+`shadow` vaults and audits the reply but forwards it unchanged.
 
 Checks, in order (first failure wins):
   kill switch . A2A enabled at the current autonomy level (L4) . method allowed (no
@@ -26,8 +32,10 @@ HTTP+JSON and gRPC bindings, and shared task-ownership state for several replica
 
 from __future__ import annotations
 
+import copy
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol
@@ -359,7 +367,7 @@ class A2aProxy:
         if not self._reserve_delegation(call, run):
             return self._deny(call, base, A2aDenied(
                 "DELEGATION_BUDGET", f"run used its {self.rule.max_delegations_per_run} delegations"), now)
-        return await self._forward(card.endpoint(), call, headers, base, scope, owner)
+        return await self._forward(card.endpoint(), call, headers, base, scope, owner, peer=peer)
 
     # ------------------------------------------------------------------ inbound
 
@@ -416,7 +424,7 @@ class A2aProxy:
         return A2aReply(200, rpc_error(call.rpc_id, d.code, str(d), d.rpc_code))
 
     async def _forward(self, url: str, call: Call, headers: dict[str, str], base: dict[str, Any],
-                       scope: str, owner: str) -> A2aReply:
+                       scope: str, owner: str, peer: A2aPeerRule | None = None) -> A2aReply:
         stream = call.method in STREAMING
         started = time.monotonic()
         try:
@@ -426,30 +434,143 @@ class A2aProxy:
             return A2aReply(200, rpc_error(call.rpc_id, "A2A_UNREACHABLE", "could not reach the other agent",
                                            RPC_UPSTREAM))
         if reply.events is not None:
-            return A2aReply(200, events=self._relay(reply.events, call, base, scope, owner, started))
+            return A2aReply(200, events=self._relay(reply.events, call, base, scope, owner, started, peer))
         body = reply.body if isinstance(reply.body, dict) else rpc_error(
             call.rpc_id, "A2A_BAD_RESPONSE", f"the other agent answered HTTP {reply.status}", RPC_UPSTREAM)
         tasks = self._claim(scope, owner, _task_ids(body.get("result")))
         if call.method == "ListTasks":
             body = self._filter_list(scope, owner, body)
         err = body.get("error")
+        fields: dict[str, Any] = {}
+        if peer is not None:
+            body, fields = self._shield_reply(call, peer, body)
         self.gw.audit.append("a2a_call", **base, method=call.method, task_ids=tasks,
                              rpc_error=(err or {}).get("code") if isinstance(err, dict) else None,
-                             duration_ms=round((time.monotonic() - started) * 1000))
+                             duration_ms=round((time.monotonic() - started) * 1000), **fields)
         return A2aReply(200, body)
 
-    async def _relay(self, events, call, base, scope, owner, started) -> AsyncIterator[dict[str, Any]]:
+    async def _relay(self, events, call, base, scope, owner, started, peer=None) -> AsyncIterator[dict[str, Any]]:
         tasks: set[str] = set()
         count = 0
+        handles: list[str] = []
+        hidden = 0
         try:
             async for event in events:
                 count += 1
                 tasks |= _task_ids(event.get("result") if isinstance(event, dict) else None)
                 self._claim(scope, owner, tasks)
+                if peer is not None and isinstance(event, dict):
+                    event, fields = self._shield_reply(call, peer, event)
+                    handles += [fields["result_handle"]] if fields.get("result_handle") else []
+                    hidden += fields.get("hidden_parts", 0)
                 yield event
         finally:
+            extra = {"result_handles": handles, "hidden_parts": hidden} if handles else {}
             self.gw.audit.append("a2a_call", **base, method=call.method, task_ids=sorted(tasks), events=count,
-                                 duration_ms=round((time.monotonic() - started) * 1000))
+                                 duration_ms=round((time.monotonic() - started) * 1000), **extra)
+
+    # ------------------------------------------------------------------ data safety on peer replies (D7)
+
+    def _shield_reply(self, call: Call, peer: A2aPeerRule, body: dict[str, Any]
+                      ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Vault a peer's reply and keep from the agent what `peer.reply` doesn't allow.
+        Returns (body for the agent, audit fields: handle and counts, never values)."""
+        shield = self.gw.shield
+        if shield is None or not shield.enabled or shield.results == "off":
+            return body, {}
+        err = body.get("error")
+        if isinstance(err, dict):
+            if shield.results != "enforce":
+                return body, {}
+            return {**body, "error": {"code": err.get("code", RPC_UPSTREAM),
+                                      "message": "the other agent returned an error"}}, {"rpc_error_hidden": True}
+        result = body.get("result")
+        if not _has_parts(result):
+            return body, {}
+        principal = call.principal
+        handle = shield.store(principal, call.run_id, f"a2a:{peer.name}", result)
+        if shield.results != "enforce":
+            return body, {"result_handle": handle, "result": "shadow"}
+
+        reply = peer.reply or {}
+        rule = _ReplyRule(f"a2a:{peer.name}", reply.get("data_keys") or {}, reply.get("verdicts") or {})
+        note = f"[hidden by the gateway: {handle}]"
+        shaped = copy.deepcopy(result)
+        hidden_values: list[Any] = []
+        hidden_parts = 0
+        for parts in _parts_lists(shaped):
+            for i, part in enumerate(parts):
+                if not isinstance(part, dict):
+                    continue
+                if isinstance(part.get("text"), str):
+                    if reply.get("text") != "allowed":
+                        hidden_values += _distinctive(part["text"])
+                        part["text"] = note
+                        hidden_parts += 1
+                elif "data" in part:
+                    data = part["data"]
+                    out = shield.shape_json(principal, call.run_id, rule, data, handle)
+                    hidden_values += shield.hidden_values(rule, data)
+                    part["data"] = out.get("result", {})
+                    hidden_parts += 1 if out.get("hidden_keys") else 0
+                else:  # files, raw bytes, URLs: the gateway can't vouch for them
+                    parts[i] = {**({"kind": "text"} if "kind" in part else {}), "text": note}
+                    hidden_parts += 1
+        target = _payload(shaped)
+        if isinstance(target, dict):
+            target["metadata"] = {**(target.get("metadata") or {}), "aof_result_handle": handle}
+        if shield.egress is not None:
+            shield.egress.remember(principal, hidden_values, shown=shaped)
+        return {**body, "result": shaped}, {"result_handle": handle, "result": "enforce",
+                                             "hidden_parts": hidden_parts}
+
+
+@dataclass
+class _ReplyRule:
+    """What DataShield.shape_json reads from a tool rule, for a peer's data parts."""
+
+    name: str
+    result_keys: dict[str, str]
+    verdicts: dict[str, Any]
+    reads: list[str] = field(default_factory=list)
+    query: dict[str, Any] | None = None
+
+
+def _parts_lists(node: Any) -> list[list]:
+    """Every `parts` list in a Message, Task (status, history, artifacts) or stream event."""
+    out: list[list] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "parts" and isinstance(v, list):
+                out.append(v)
+            else:
+                out += _parts_lists(v)
+    elif isinstance(node, list):
+        for v in node:
+            out += _parts_lists(v)
+    return out
+
+
+def _payload(result: Any) -> Any:
+    """The object that carries `metadata`: 1.0 wraps it ({"task": {...}}), 0.3 doesn't."""
+    if isinstance(result, dict) and len(result) == 1:
+        (key, inner), = result.items()
+        if key in ("task", "message", "statusUpdate", "artifactUpdate") and isinstance(inner, dict):
+            return inner
+    return result
+
+
+def _has_parts(node: Any) -> bool:
+    return any(parts for parts in _parts_lists(node))
+
+
+_DISTINCTIVE = re.compile(r"[\w.,/-]*\d[\w.,/-]*")
+
+
+def _distinctive(text: str) -> list[str]:
+    """Numbers and ids in hidden free text, for the egress fingerprints (whole phrases
+    would match ordinary words later)."""
+    return [m.strip(".,/-") for m in _DISTINCTIVE.findall(text)]
 
 
 # --------------------------------------------------------------------------- HTTP routes

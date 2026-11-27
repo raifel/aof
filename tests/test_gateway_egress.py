@@ -108,6 +108,18 @@ def test_the_user_may_name_a_value_themselves(app):
     assert ask(p, [user("is opex above 180.00?")]).status == 200
 
 
+def test_the_agent_may_pass_on_a_value_the_user_typed(app):
+    """The user names a value that is also in a hidden result; the agent reuses it."""
+    p, gw = proxy(app)
+    _vault_opex(gw)
+    res = ask(p, [user("is opex 180.00 for DE01?"),
+                  {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "x",
+                                                     "input": {"threshold": "180.00"}}]},
+                  {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]}])
+    assert res.status == 200
+    assert ask(p, [user("is opex high?"), {"role": "assistant", "content": "it is 180.00"}, user("ok")]).status == 403
+
+
 def test_fingerprints_are_per_user(app):
     p, gw = proxy(app)
     _vault_opex(gw)

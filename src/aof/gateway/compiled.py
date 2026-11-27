@@ -92,6 +92,7 @@ class A2aPeerRule(_M):
     credential_env: str | None = None
     audience: str | None = None
     scopes: list[str] = []
+    reply: dict[str, Any] = {}  # {text, data_keys, verdicts}, clamped by data_safety.mode
 
 
 class A2aRule(_M):

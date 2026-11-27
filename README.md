@@ -297,7 +297,8 @@ a2a:
 
 - **Outbound:** the app's agent sends A2A requests to `POST /a2a/peers/<peer>`. The
   gateway loads and checks the peer's agent card, adds one to `x-aof-delegation-depth`,
-  attaches the gateway's credential for that peer, and forwards the payload unchanged.
+  attaches the gateway's credential for that peer, and forwards the payload unchanged (except the
+  data-safety shaping below).
 - **Inbound:** other agents read `/.well-known/agent-card.json` (the app's card with its
   endpoint rewritten to the gateway) and call `POST /a2a`. The calling agent is the
   token's `client_id`; the user is its subject. Start the gateway with
@@ -309,6 +310,9 @@ depth, per-run delegation and cost budgets, task ownership (a caller can only re
 cancel or continue tasks it started, and `ListTasks` is filtered), and the peer card's
 contracted skills. Denials are JSON-RPC errors with `data.error` set to the AOF code.
 The audit log records method, peer or caller, and task ids, never message content.
+Under `data_safety.results: enforce`, a peer's reply is vaulted and the agent sees only
+what the peer's `reply:` block allows (text, data keys, verdicts); the rest becomes
+`[hidden by the gateway: res_…]` ([docs/data-safety.md](docs/data-safety.md), D7).
 
 ## Running the evals (`aof eval`)
 

@@ -74,8 +74,9 @@ D1 (schema and rules), D2 (result vault and gateway wiring), D3 (egress guard on
 execution-accuracy and no-leak evals) are done, and DS8 is decided and built (verdicts,
 value references, signed exceptions), so value-reasoning apps keep working under
 `enforce`. The platform default is still `results: shadow`; turning on `enforce` is a
-platform decision. D6 (render endpoint, template fidelity, probe signal) is done; D7
-(A2A replies and judge inputs) is next.
+platform decision. D6 (render endpoint, template fidelity, probe signal) and D7 (A2A
+replies and judge inputs) are done: all phases are built. Next: a billed `aof eval` under
+`enforce`, then turning it on per platform.
 
 ## 5. Known limits to revisit later
 

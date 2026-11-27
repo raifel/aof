@@ -8,6 +8,7 @@ from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
 from ..enums import AutonomyLevel, DataSafetyMode, Exposure, Pattern, RiskTier
 from .base import Signoff, Strict
+from .manifest import VerdictSpec
 
 
 class AppInfo(Strict):
@@ -114,6 +115,18 @@ class A2aPeer(Strict):
     credential_env: str | None = None  # env var holding the gateway's token for this peer
     audience: str | None = None  # on-behalf-of token audience; default: the peer's endpoint
     scopes: list[str] = []  # scopes requested in the on-behalf-of token for this peer
+    reply: "PeerReply" = Field(default_factory=lambda: PeerReply())
+
+
+class PeerReply(Strict):
+    """What this app's agent may see of a peer's replies when data safety enforces (D7).
+
+    Replies are vaulted whole; the agent gets a handle and only this. `text: none`
+    (default) hides text parts, which can carry anything and inject instructions."""
+
+    text: Literal["none", "allowed"] = "none"
+    data_keys: dict[str, Exposure] = {}  # keys of structured (data) parts, like result_keys
+    verdicts: dict[str, VerdictSpec] = {}
 
 
 class A2aConfig(Strict):
@@ -144,3 +157,5 @@ class Project(Strict):
     data_safety: DataSafetyConfig = DataSafetyConfig()
     approvals: Approvals = Approvals()
     artefacts: Artefacts = Artefacts()
+
+A2aPeer.model_rebuild()

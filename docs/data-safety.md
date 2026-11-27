@@ -1,13 +1,14 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1–D6 and DS8 built**: contract rules, the result vault with the gateway wiring,
+Status: **D1–D7 and DS8 built**: contract rules, the result vault with the gateway wiring,
 the query compiler with the SQL guard, the egress guard on model requests, the
 `ledger-analyst` example with execution-accuracy and no-leak evals, and verdicts, value
 references and signed exceptions for agents that must decide on hidden values, and
-answer templates rendered for the user (`POST /render`) with template-fidelity evals. The platform default is `results: shadow`:
+answer templates rendered for the user (`POST /render`) with template-fidelity evals,
+and peer agents' replies (A2A) under the same exposure rules. The platform default is `results: shadow`:
 governed results are vaulted and audited but still returned to the agent. Set `enforce`
 in `platform.yaml` or an app's `aof.yaml` to keep them from the model; the egress guard
-follows the same mode. D7 is not built. Written 2026-11-27 against commit `7accedb`.
+follows the same mode. Written 2026-11-27 against commit `7accedb`.
 
 Two goals for every onboarded app:
 
@@ -35,8 +36,8 @@ The gateway decides *whether* a call may run. It does not look at what comes bac
 | L2 | User's prompt | anything the user pastes (IBANs, invoices, payroll) |
 | L3 | Documents and tickets the agent retrieves | full text |
 | L4 | Approval previews (dry-run output) | goes back to the agent, so to the model |
-| L5 | A2A replies from peer agents | full message content |
-| L6 | Eval judge (`evalrun.py`) | the gateway record. Argument values are already hashed, but results aren't |
+| L5 | A2A replies from peer agents | full message content (closed in D7: vaulted, shaped by the peer's `reply:` block) |
+| L6 | Eval judge (`evalrun.py`) | the agent's answer and the gateway record, never results (D7: a leaking answer isn't judged) |
 
 The audit log is already safe: it stores argument hashes and key names, never values
 (`audit.py`). The plan below keeps that rule.
@@ -150,6 +151,45 @@ const table = final.result?.result_handle &&     // the full table behind the an
 
 Shaped results tell the agent how to write placeholders and references (`next`), and the
 reference agent in `aof eval` gets the same instructions when the app enforces data safety.
+
+### Peer replies and the eval judge (D7, as built)
+
+**L5, A2A replies.** When this app's agent delegates to a peer, the reply goes into the
+vault whole, and in `enforce` the agent gets the same JSON-RPC shape with only what the
+peer's `reply:` block in `aof.yaml` allows:
+
+```yaml
+a2a:
+  peers:
+    - name: billing
+      card_url: https://billing.example/.well-known/agent-card.json
+      skills: [invoice_lookup]
+      reply:
+        text: none                          # default; text can carry anything, and instructions
+        data_keys: {invoice_id: token, amount: aggregate}
+        verdicts:
+          paid: {type: boolean}
+          state: {type: enum, values: [open, paid, void]}
+```
+
+- Text parts become `[hidden by the gateway: res_…]` unless `text: allowed`. Data parts
+  are shaped like tool results (declared keys, tokens, verdicts). Files, URLs and raw
+  bytes are always hidden. The handle goes in the Task's or Message's
+  `metadata.aof_result_handle`, so the user's UI can show the full reply.
+- `metadata_only` clamps `text` and `data_keys` like result keys. Exceptions can name
+  `<peer>.text` or `<peer>.<data key>` (AOF-P077, P078), and peer verdicts follow AOF-P079.
+- A peer's JSON-RPC error keeps its code; its message and data are replaced.
+- Streaming replies are shaped event by event. Numbers and ids in hidden parts become
+  egress fingerprints, so the agent can't copy them into a model call.
+- `shadow` vaults and audits the reply but forwards it unchanged. The audit records
+  `result_handle` and `hidden_parts`, never content.
+- Inbound calls (another agent calling this app) aren't shaped here: the caller's own
+  gateway applies its rules. An a2a-sdk client parses shaped replies (end-to-end test).
+
+**L6, the eval judge.** The judge sees the task, the expectation, the agent's answer and
+the gateway's record (tools, writes, approvals, denial codes), never tool results. Under
+`enforce` the answer holds placeholders, and an answer that carries hidden values fails
+on the leak without going to the judge.
 
 ## Exposure modes
 
@@ -337,7 +377,7 @@ so a refused request costs nothing. Built in D3:
    numbers written with a decimal point (`180.00`), numbers of 1000 or more that aren't
    plausible years, and strings of six or more characters. Before a model call, numbers,
    ids and 2–4 word phrases in the system prompt, assistant turns, tool inputs and tool
-   results are hashed and compared. A match → `DATA_EGRESS_BLOCKED`. **Text the user typed
+   results are hashed and compared, except values the user's own text contains. A match → `DATA_EGRESS_BLOCKED`. **Text the user typed
    is not compared**, because users may name values they know. Keying by user rather than
    run means mismatched run ids between `/mcp` and `/v1/messages` don't weaken the check.
 2. **Pattern detectors** on all text, the user's included: `iban` (mod-97 checked),
@@ -359,8 +399,9 @@ the matched text. Config: `data_safety.egress` in `platform.yaml`.
 
 **Limits.** This is a tripwire, not a proof. A value the agent rewords ("one hundred and
 eighty euros") or splits passes. Short values (`DE01`, `180`) aren't fingerprinted, so
-they can't be caught. An assistant turn that repeats something the user typed can be
-blocked if the same distinctive value was also in a hidden result. The external
+they can't be caught. Values the user typed in the same request (an order id the agent passes on)
+are not counted, even when a hidden result holds them too (fixed in D7; it blocked the
+refunds agent under `enforce`). The external
 classifier hook (ROADMAP 4.10) is not built.
 
 ## Agents that decide on values they can't see (DS8)
@@ -560,12 +601,13 @@ from the original sketch are left for later.
 | D4 | `aof/query`: semantic IR, compiler, SQL guard with row-filter injection (query budget moves to D2, where run state is) | medium | **done** |
 | D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | **done** |
 | D6 | Template render endpoint and a reference UI snippet; template fidelity; inference-attack signal (audit; dashboard chart waits for ROADMAP 3.1) | small | **done** |
-| D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
+| D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | **done** |
 
 D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2, and D5
 measures both. DS8 removes the blocker for `enforce` on value-reasoning apps, and D6
-shows the user the figures the model never saw. Next: D7, and a billed `aof eval` under
-`enforce`.
+shows the user the figures the model never saw; D7 closes the A2A and judge paths. All
+phases are built. Next: a billed `aof eval` under `enforce`, then turning `enforce` on per
+platform.
 
 ## Open decisions
 

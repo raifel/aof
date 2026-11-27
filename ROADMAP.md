@@ -78,6 +78,17 @@ platform decision. D6 (render endpoint, template fidelity, probe signal) and D7 
 replies and judge inputs) are done: all phases are built. Next: a billed `aof eval` under
 `enforce`, then turning it on per platform.
 
+## 4c. Lifecycle loops
+
+From reviewing the "team with agentic AI" lifecycle (sense, frame, compare, shape, deliver,
+learn) against the gates:
+
+| # | Step | Why | Status |
+|---|------|-----|--------|
+| 4c.1 | Stale eval results: `aof eval` records a basis (policy, contracts, models, prompt, cases); the evaluate gate fails with AOF-G045 when it no longer matches | a model, prompt or contract change used to leave old scores passing the gate | **done** |
+| 4c.2 | Outcome metrics: declare the promised outcome in `use-case.yaml` (e.g. median handling time) and measure it from the audit log in `aof gateway pilot-report` | the business outcome is promised at intake and never checked | proposed |
+| 4c.3 | `aof gateway harvest-cases`: turn audited denials, rejected approvals, egress blocks and probe signals into candidate golden and safety cases for review | production lessons don't flow back into the evals | proposed |
+
 ## 5. Known limits to revisit later
 
 See "Not built yet" in the README for the full list. The ones most likely to matter first:

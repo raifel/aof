@@ -197,11 +197,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print("no app server: set mcp_server.command in aof.yaml, pass --upstream-url, or -- <command>",
               file=sys.stderr)
         return 2
-    agent = None
+    agent, label, text = None, None, None
     if args.agent:
-        agent = _load_agent(args.agent)
+        agent, label = _load_agent(args.agent), args.agent
     elif args.system_prompt:
-        agent = ClaudeAgent(Path(args.system_prompt).read_text())
+        from .evalbasis import PROMPT_FILE
+
+        path = Path(args.system_prompt).resolve()
+        text = path.read_text()
+        agent = ClaudeAgent(text)
+        rel = path.relative_to(lp.root.resolve()) if path.is_relative_to(lp.root.resolve()) else path
+        label = PROMPT_FILE + str(rel)
 
     def progress(i, total, out):
         mark = "PASS" if out.passed else "FAIL"
@@ -213,7 +219,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     try:
         run = asyncio.run(run_suite(lp, platform, upstream, AnthropicProvider(), agent=agent, level=level,
                                     judge=False if args.no_judge else None, approvals=args.approvals,
-                                    limit=args.limit, progress=progress))
+                                    limit=args.limit, progress=progress, agent_label=label, agent_prompt=text))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

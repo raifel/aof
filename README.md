@@ -63,6 +63,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
 | P077–P079 | Signed exposure exceptions name a real field and stay within the contract; verdicts are small typed decisions, not result keys |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
+| G045 / G046 | Evaluate gate: results are stale (the policy, data contracts, models, prompt or cases changed since the run); warning when results carry no basis to check |
 | G070 / G071 | Evaluate gate: apps with query tools cover the data-safety red team (DS01–DS07); apps that enforce data safety report `no_leak_rate` |
 
 The compiled policy defaults to deny. It enforces the **approved** level (`autonomy.current`),
@@ -350,6 +351,12 @@ aof gate evaluate examples/refunds-assistant
   Example: `examples/ledger-analyst`; details in [docs/data-safety.md](docs/data-safety.md).
 - **Output.** `results.json` (with the level, models and error count) and a per-case
   `report.jsonl` next to it.
+- **Stale results.** `results.json` records a `basis`: hashes of the compiled policy at the
+  evaluated level (tools, data contracts, budgets, data safety, models), the agent's prompt
+  (the reference prompt, a `--system-prompt` file, or just the name of a custom `--agent`)
+  and the cases. The evaluate gate recomputes them and fails with AOF-G045, naming what
+  changed, when they differ; model prices are ignored. Results without a basis (written by
+  hand or another runner) get the AOF-G046 warning.
 
 The pilot gate reads `evals/pilot.json`. During a supervised L2 pilot every proposed
 write goes to a human, so the gateway's audit logs already hold the answer:

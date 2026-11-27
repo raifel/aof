@@ -14,6 +14,7 @@ from .enums import AGENTIC_PATTERNS, ASI_RISKS, DATA_SAFETY_RISKS, AutonomyLevel
 from .findings import Finding, Report, error, info, warning
 from .loader import LoadedProject
 from .platform import PlatformConfig
+from .evalbasis import stale_reasons
 from .policy import data_safety_results
 
 GATE_NAMES = {
@@ -129,7 +130,27 @@ def _evaluate(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:
     if res.cases_run < n + len(lp.safety_cases):
         out.append(warning("AOF-G044", p.artefacts.eval_results,
                            f"results cover {res.cases_run} cases; suite has {n + len(lp.safety_cases)}"))
+    out += _stale(lp, platform, res)
     return out
+
+
+def _stale(lp: LoadedProject, platform: PlatformConfig, res) -> list[Finding]:
+    """Results describe the app only while what they measured is unchanged (evalbasis.py)."""
+    where = lp.project.artefacts.eval_results
+    recorded = (res.model_extra or {}).get("basis")
+    if not isinstance(recorded, dict):
+        return [warning("AOF-G046", where, "results carry no basis, so the gate can't tell whether they are stale",
+                        "re-run `aof eval`, which records what it evaluated")]
+    level = (res.model_extra or {}).get("autonomy_level")
+    try:
+        lvl = AutonomyLevel(level) if level else None
+    except ValueError:
+        lvl = None
+    reasons = stale_reasons(lp, platform, recorded, lvl)
+    if not reasons:
+        return []
+    return [error("AOF-G045", where, "eval results are stale: " + "; ".join(reasons),
+                  "re-run `aof eval` so the scores describe the app as it is now")]
 
 
 def _pilot(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:

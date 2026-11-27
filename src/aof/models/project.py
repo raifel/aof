@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
-from ..enums import AutonomyLevel, DataSafetyMode, Pattern, RiskTier
+from ..enums import AutonomyLevel, DataSafetyMode, Exposure, Pattern, RiskTier
 from .base import Signoff, Strict
 
 
@@ -85,11 +85,24 @@ class LlmConfig(Strict):
     zero_data_retention: bool = False
 
 
+class ExposureException(Strict):
+    """One field opened up under metadata_only, signed off by the review board (DS8).
+
+    `field` is "<data contract>.<field>" or "<tool>.<result key>". The exposure can't
+    exceed what contract mode would give (AOF-P078), so platform ceilings still hold."""
+
+    field: str = Field(pattern=r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_]+$")
+    exposure: Exposure
+    reason: str = Field(min_length=10)  # why the agent must see this value
+    signoff: Signoff
+
+
 class DataSafetyConfig(Strict):
     """What data the model may see. Unset: the platform's default_mode."""
 
     mode: DataSafetyMode | None = None
     results: Literal["enforce", "shadow", "off"] | None = None  # may only tighten the platform's
+    exceptions: list[ExposureException] = []  # metadata_only only: fields the board opened up
 
 
 class A2aPeer(Strict):

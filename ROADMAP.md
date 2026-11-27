@@ -71,9 +71,10 @@ Plan: [docs/data-safety.md](docs/data-safety.md). Business data stays out of the
 behind a gateway-side SQL guard. Phases D1–D7 and open decisions DS1–DS7 are tracked there.
 D1 (schema and rules), D2 (result vault and gateway wiring), D3 (egress guard on
 `/v1/messages`), D4 (query IR and SQL guard) and D5 (`examples/ledger-analyst`,
-execution-accuracy and no-leak evals) are done. The platform default is
-`results: shadow`; turning on `enforce` is a platform decision (DS8 first: agents that
-must see values). Then D6 (render endpoint, template fidelity) and D7.
+execution-accuracy and no-leak evals) are done, and DS8 is decided and built (verdicts,
+value references, signed exceptions), so value-reasoning apps keep working under
+`enforce`. The platform default is still `results: shadow`; turning on `enforce` is a
+platform decision. Then D6 (render endpoint, template fidelity) and D7.
 
 ## 5. Known limits to revisit later
 

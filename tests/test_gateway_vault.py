@@ -63,7 +63,8 @@ def app(example):
     data["tools"] += [dict(QUERY_TOOL, query={**QUERY_TOOL["query"], "dialect": "duckdb"}), sql_tool]
     lookup = next(t for t in data["tools"] if t["name"] == "lookup_order")
     # order_id is a contract field (its contract exposure wins); ticket_ref is not
-    lookup["result_keys"] = {"status": "allowed", "ticket_ref": "token", "order_id": "allowed"}
+    # status is a verdict in the example manifest (DS8); carrier is a plain result key
+    lookup["result_keys"] = {"carrier": "allowed", "ticket_ref": "token", "order_id": "allowed"}
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     return example
 
@@ -109,7 +110,7 @@ class LedgerUpstream:
                                                          for r in cur.fetchall()]})
         if name == "lookup_order":
             return ToolResult({"order_id": args["order_id"], "ticket_ref": f"TCK-{args['order_id']}",
-                               "status": "delivered", "customer_id": "CUS-88123",
+                               "status": "delivered", "carrier": "DHL", "customer_id": "CUS-88123",
                                "amount": 49.9, "items": [{"sku": "A-1", "amount": 49.9}]})
         if name == "create_refund_request" and args.get("dry_run"):
             return ToolResult({"would_refund": args["amount"], "order_id": args["order_id"], "status": "preview"})
@@ -289,7 +290,8 @@ def test_json_results_show_declared_keys_only(app):
 def test_metadata_only_clamps_result_keys(app):
     gw, _ = gateway(app)  # T3 default: metadata_only
     body = call(gw, "lookup_order", {"order_id": "ORD-1"}).content
-    assert "status" in body["hidden_keys"] and body["result"]["ticket_ref"].startswith("tok_")
+    assert "carrier" in body["hidden_keys"] and body["result"]["ticket_ref"].startswith("tok_")
+    assert body["result"]["status"] == "delivered"  # a verdict: shown in every mode
 
 
 def test_token_arguments_are_resolved_for_the_app(app):

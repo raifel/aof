@@ -136,7 +136,8 @@ class PolicyEngine:
             if not isinstance(amount, (int, float)):
                 return "amount missing or not numeric"
             if amount > max_amount:
-                return f"amount {amount} exceeds limit {max_amount}"
+                # The amount may come from a vault reference the agent never saw: don't echo it.
+                return f"amount exceeds limit {max_amount}"
         max_per_hour = limits.get("max_per_hour")
         if max_per_hour is not None:
             ok, _ = self.state.writes.acquire(key, 3600, max_per_hour, now)  # last check: takes the slot

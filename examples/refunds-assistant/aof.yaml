@@ -35,6 +35,16 @@ llm:                         # model calls go through the gateway's /v1/messages
   rate_limit: {calls: 30, per: minute}
   zero_data_retention: true  # provider account has zero data retention (AOF-P073)
 
+# T3: the platform keeps this app on data_safety.mode metadata_only. Under results:
+# enforce the agent decides from the verdicts on lookup_order and passes amounts as
+# {{<result_handle>.amount}}. To open one field up, the review board signs an exception:
+# data_safety:
+#   exceptions:
+#     - field: order_facts.amount
+#       exposure: aggregate
+#       reason: "compare refund totals per customer"
+#       signoff: {by: review-board, date: 2026-12-01, ref: RB-90}
+
 approvals:
   architecture_review: {by: arch-review-board, date: 2026-10-02, ref: ARCH-412}
   # review_board: required before promotion because the app is T3

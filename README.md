@@ -61,6 +61,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P023 | L4 requires an A2A agent card |
 | P025 | App budgets may only tighten the platform's |
 | P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
+| P077–P079 | Signed exposure exceptions name a real field and stay within the contract; verdicts are small typed decisions, not result keys |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
 | G070 / G071 | Evaluate gate: apps with query tools cover the data-safety red team (DS01–DS07); apps that enforce data safety report `no_leak_rate` |
 
@@ -268,7 +269,11 @@ Model requests to `/v1/messages` pass an egress guard in the same mode. It block
 requests that carry values from vaulted results (`DATA_EGRESS_BLOCKED`); redacts IBANs,
 e-mail addresses and phone numbers into tokens; blocks card numbers
 (`SENSITIVE_DATA_BLOCKED`); and blocks images and documents it can't check
-(`NON_TEXT_BLOCKED`). Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives
+(`NON_TEXT_BLOCKED`). An agent that must decide on hidden values gets **verdicts** (typed
+decisions a tool declares under `verdicts:`, shown in every mode) and passes values on as
+**references** (`"amount": "{{res_<id>.amount}}"`, resolved by the gateway before the
+policy, so limits and approvers see the real number); the review board can open single
+fields with signed `data_safety.exceptions`. Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives
 restarts and is shared by replicas. Details and limits: [docs/data-safety.md](docs/data-safety.md).
 
 ### Agent-to-agent calls (A2A)

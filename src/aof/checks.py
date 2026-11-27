@@ -13,7 +13,7 @@ from .loader import LoadedProject
 from .models import AofRegistryMeta
 from .models.evals import REQUIRED_METRICS
 from .platform import PlatformConfig
-from .policy import check_policy
+from .policy import check_ds8, check_policy
 from .datasafety import effective_classification
 
 SEMVER = re.compile(r"^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$")
@@ -290,6 +290,8 @@ def validate(lp: LoadedProject, platform: PlatformConfig) -> Report:
     report.extend(check_registry(lp, platform))
     report.extend(check_data_contracts(lp))
     report.extend(check_data_safety(lp, platform))
+    if lp.manifest is not None:
+        report.extend(check_ds8(lp.project, lp.manifest, platform, lp.data_contracts))
     report.extend(check_agent_card(lp))
     report.extend(check_evals_static(lp, platform))
     report.extend(check_docs(lp))

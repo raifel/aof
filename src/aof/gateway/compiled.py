@@ -42,6 +42,7 @@ class ToolRule(_M):
     reversibility: str | None = None
     query: dict[str, Any] | None = None  # query tool settings (docs/data-safety.md)
     result_keys: dict[str, str] = {}  # non-contract result keys -> exposure
+    verdicts: dict[str, dict[str, Any]] = {}  # key -> {type: boolean | enum, values}
 
 
 class AgentInfo(_M):

@@ -70,18 +70,24 @@ def effective_classification(f: ContractField) -> Classification:
 
 
 def effective_exposure(f: ContractField, default_exposure: dict[Classification, Exposure],
-                       mode: DataSafetyMode) -> Exposure:
+                       mode: DataSafetyMode, exception: Exposure | None = None) -> Exposure:
+    """The field's exposure. Under metadata_only only tokens stay, unless the review board
+    signed an exception for the field (DS8); an exception never exceeds contract mode."""
     declared = f.llm_exposure or default_exposure[effective_classification(f)]
     if mode is DataSafetyMode.METADATA_ONLY:
+        if exception is not None:
+            return min(exception, declared)
         return Exposure.TOKEN if declared is Exposure.TOKEN else Exposure.NONE
     return declared
 
 
 def view_from_contract(dc: DataContract, default_exposure: dict[Classification, Exposure],
-                       mode: DataSafetyMode) -> ViewSchema:
+                       mode: DataSafetyMode, exceptions: dict[str, Exposure] | None = None) -> ViewSchema:
+    exc = exceptions or {}
     return ViewSchema(
         name=dc.semantic_view,
-        columns={f.name.lower(): ColumnSchema(type=f.type, exposure=effective_exposure(f, default_exposure, mode))
+        columns={f.name.lower(): ColumnSchema(type=f.type, exposure=effective_exposure(
+                     f, default_exposure, mode, exc.get(f"{dc.name}.{f.name}")))
                  for f in dc.fields},
         row_filter=dc.row_filter,
         measures=dc.measures,
@@ -92,5 +98,8 @@ def view_from_contract(dc: DataContract, default_exposure: dict[Classification, 
 
 
 def views_from_contracts(contracts: Iterable[DataContract], default_exposure: dict[Classification, Exposure],
-                         mode: DataSafetyMode) -> dict[str, ViewSchema]:
-    return {dc.semantic_view.lower(): view_from_contract(dc, default_exposure, mode) for dc in contracts}
+                         mode: DataSafetyMode, exceptions: dict[str, Exposure] | None = None
+                         ) -> dict[str, ViewSchema]:
+    """`exceptions`: "<contract>.<field>" -> exposure, signed off for metadata_only (DS8)."""
+    return {dc.semantic_view.lower(): view_from_contract(dc, default_exposure, mode, exceptions)
+            for dc in contracts}

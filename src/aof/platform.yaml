@@ -116,6 +116,7 @@ data_safety:                           # what data may reach the model (docs/dat
     non_text: block                    # images and documents cannot be checked: block | allow
     fingerprints: true                 # block requests that carry values from vaulted results
     max_fingerprints_per_user: 20000
+  max_verdict_values: 8                # most values an enum verdict may declare (tools.manifest `verdicts:`)
   query:                               # ceilings for query tools (tools.manifest `query:`)
     max_queries_per_run: 20
     max_rows_ceiling: 10000

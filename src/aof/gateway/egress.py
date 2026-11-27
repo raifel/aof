@@ -140,7 +140,8 @@ class Detector:
 
 BUILTIN = {
     "iban": Detector("iban", re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b"), _iban_ok),
-    "card_number": Detector("card_number", re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)"), _luhn_ok),
+    # Digits glued to letters are an id or a hash (res_fbe0395181482780...), not a card.
+    "card_number": Detector("card_number", re.compile(r"(?<![\w-])(?:\d[ -]?){12,18}\d(?![\w-])"), _luhn_ok),
     "email": Detector("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
     "phone": Detector("phone", re.compile(r"\+\d[\d ()-]{6,18}\d"), _phone_ok),
 }

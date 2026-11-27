@@ -1,8 +1,9 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1–D5 built**: contract rules, the result vault with the gateway wiring, the
-query compiler with the SQL guard, the egress guard on model requests, and the
-`ledger-analyst` example with execution-accuracy and no-leak evals. The platform default is `results: shadow`:
+Status: **D1–D5 and DS8 built**: contract rules, the result vault with the gateway wiring,
+the query compiler with the SQL guard, the egress guard on model requests, the
+`ledger-analyst` example with execution-accuracy and no-leak evals, and verdicts, value
+references and signed exceptions for agents that must decide on hidden values. The platform default is `results: shadow`:
 governed results are vaulted and audited but still returned to the agent. Set `enforce`
 in `platform.yaml` or an app's `aof.yaml` to keep them from the model; the egress guard
 follows the same mode. D6 and D7 are not built. Written 2026-11-27 against commit `7accedb`.
@@ -314,6 +315,9 @@ so a refused request costs nothing. Built in D3:
    (`SENSITIVE_DATA_BLOCKED`) or `off`. Redact replaces the match with a vault token, so
    the agent can still pass it to a tool, which gets the real value (same user and run).
    Defaults: card numbers block; the rest redact.
+   Digits glued to letters (`res_fbe0395181482780…`) are not read as a card number: before
+   that fix, about 0.1% of result handles passed the Luhn check and got an honest request
+   blocked.
 3. **Content the guard can't read.** Images and documents are blocked by default
    (`NON_TEXT_BLOCKED`); set `egress.non_text: allow` to let them through, unchecked.
 4. **Never altered:** `thinking` and `redacted_thinking` blocks, which the provider signs.
@@ -327,6 +331,65 @@ eighty euros") or splits passes. Short values (`DE01`, `180`) aren't fingerprint
 they can't be caught. An assistant turn that repeats something the user typed can be
 blocked if the same distinctive value was also in a hidden result. The external
 classifier hook (ROADMAP 4.10) is not built.
+
+## Agents that decide on values they can't see (DS8)
+
+`metadata_only` with `results: enforce` hides an order's status and amount from a
+refunds agent, which then can't decide anything. Decided and built: three mechanisms, in
+the order an app should reach for them. All three keep the values out of the model.
+
+1. **Verdicts.** A tool declares typed decisions the app computes over the hidden values:
+
+   ```yaml
+   verdicts:
+     status: {type: enum, values: [delivered, in_transit, lost, returned]}
+     refundable: {type: boolean, description: "within the refund window, not refunded before"}
+   ```
+
+   The gateway shows verdicts in every mode, `metadata_only` included, and drops any value
+   outside the declared type (a status that reads `delivered on 2026-10-01, total 4711.00`
+   is hidden). The decision logic stays deterministic and testable in the app. An enum
+   carries at most log2(values) bits per call; `max_verdict_values` (8) caps it, and a key
+   can't be both a verdict and a result key (AOF-P079). Reviewing which verdicts a tool
+   returns is part of the architecture review.
+2. **Value references.** The agent passes a value it never saw: `amount:
+   "{{res_<id>.amount}}"`, or `{{res_<id>.rows[0].opex}}` for a query result (just
+   `.opex` when there is one row). The gateway resolves it from the vault (same user and
+   tenant) **before** the policy check, so `max_amount` limits and approvers see the
+   real number. In text (`"refund of {{res_<id>.amount}} EUR"`) it is substituted as
+   text. To stop the value coming back:
+   - a call that used a reference has its result shaped even if the tool reads no
+     governed data, and app errors become a generic `TOOL_FAILED`; a failed dry run
+     doesn't return the app's message;
+   - the over-limit reason no longer quotes the amount;
+   - the audit records `references: <count>`, never the values.
+
+   Unknown paths fail with `REFERENCE_INVALID`, another user's handle with
+   `RESULT_NOT_FOUND`; both are audited as `reference_refused` and nothing reaches the app.
+3. **Signed exceptions.** When the agent must reason over the value itself, the review
+   board opens one field for one app, and the app stays on `metadata_only`:
+
+   ```yaml
+   data_safety:
+     exceptions:
+       - field: order_facts.amount        # or <tool>.<result key>
+         exposure: aggregate
+         reason: "compare refund totals per customer"
+         signoff: {by: review-board, date: 2026-12-01, ref: RB-90}
+   ```
+
+   An exception can't exceed what contract mode would give, so the contract and the
+   platform ceilings still bind (AOF-P078); an unknown field is AOF-P077. Exceptions have
+   effect only under `metadata_only`.
+
+Not chosen: keeping such apps on `shadow` permanently (values reach the model) and
+allowing `contract` mode for T3 outright (opens every field, not the ones that need it).
+
+**Limits.** A reference is a one-bit oracle wherever the gateway's answer depends on the
+value: a write auto-executes within the limit, or goes to approval above it. Write rate
+limits and approvals bound it. A reference inside a query filter (`company =
+{{res.x}}`) gives a bucketed row count; the query budget bounds that. Approval records
+hold the resolved values in the state store, as before (protect it, ROADMAP 4.7).
 
 ## Inference attacks
 
@@ -391,6 +454,9 @@ Follows the conventions in `AGENTS.md`.
 | AOF-P074 | An app at or above `metadata_only_from_tier` must use `metadata_only` |
 | AOF-P075 | A query limit exceeds the platform ceiling |
 | AOF-P076 | An app's `data_safety.results` is weaker than the platform's (off < shadow < enforce) |
+| AOF-P077 | A signed exception names no data-contract field or tool result key |
+| AOF-P078 | A signed exception asks for more than contract mode would give |
+| AOF-P079 | A verdict declares more than `max_verdict_values` values, or is also a result key |
 | AOF-G070 | Evaluate gate: an app with query tools has safety cases for every data-safety category DS01–DS07 |
 | AOF-G071 | Evaluate gate: an app that reads governed data with `results: enforce` has no `no_leak_rate` in its results |
 
@@ -459,8 +525,8 @@ from the original sketch are left for later.
 | D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
 
 D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2, and D5
-measures both. Next: DS8 (agents that must see values) before any platform turns on
-`enforce`, then D6 (render endpoint, template fidelity) and D7.
+measures both. DS8 removes the blocker for `enforce` on value-reasoning apps. Next: D6
+(render endpoint, template fidelity) and D7, and a billed `aof eval` under `enforce`.
 
 ## Open decisions
 
@@ -473,7 +539,7 @@ measures both. Next: DS8 (agents that must see values) before any platform turns
 | DS5 | Do aggregates over `k` rows count as "not reaching the model"? | yes for `internal`, no for `confidential`; set by the platform team |
 | DS6 | Provider controls: zero data retention, region | required for any app with `confidential` contracts; confirm with Anthropic account terms |
 | DS7 | Which warehouse dialect first (contracts say Snowflake) | Snowflake, with DuckDB for tests |
-| DS8 | Agents that must reason about values (a refunds agent deciding on order status) vs `metadata_only`, which P074 forces on T3 apps | open: `enforce` with `metadata_only` makes such agents blind. Options: allow `contract` mode for T3 with per-field review board sign-off; or move the decision into a deterministic tool that returns only a verdict; or keep these apps on `shadow` |
+| DS8 | Agents that must reason about values (a refunds agent deciding on order status) vs `metadata_only`, which P074 forces on T3 apps | **decided, built**: verdicts first, value references for passing values to tools, signed per-field exceptions as the last resort; see "Agents that decide on values they can't see" |
 
 ## Not covered
 

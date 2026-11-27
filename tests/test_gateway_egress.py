@@ -177,6 +177,9 @@ def test_card_number_is_blocked(app):
     res = ask(p, [user(f"card {CARD}")])
     assert res.status == 403 and "SENSITIVE_DATA_BLOCKED" in res.body["error"]["message"]
     assert ask(p, [user("order 1234 5678 9012 3456")]).status == 200  # fails Luhn: not a card
+    # a handle or hash whose digits happen to pass Luhn is not a card
+    assert ask(p, [user("see res_fbe03951814827805a5f82cd and abc-4111111111111111")]).status == 200
+    assert ask(p, [user(f"card:{CARD.replace(' ', '')}.")]).status == 403
 
 
 def test_email_and_phone_redacted_everywhere(app):

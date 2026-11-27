@@ -11,6 +11,13 @@ Around every tool call that reads governed data (a `query:` tool, or any tool wi
            aggregated query over groups of at least `min_group_size` rows. A failed query
            returns a generic error, never the warehouse's message (it can echo values).
 
+Value references (DS8): an argument may name a vaulted value it never saw,
+`{{res_<id>.amount}}` or `{{res_<id>.rows[0].opex}}`. The gateway resolves it (same user)
+before the policy check, so limits and approvers see the real value; a call that used a
+reference has its result shaped too, so the app can't echo the value back. Verdicts are
+typed outputs (boolean or a few named values) the app computes; they are shown in every
+mode, and any value outside the declared type is dropped.
+
 `data_safety.results` sets the mode: `enforce` returns the shaped result, `shadow` vaults
 and audits but returns the result unchanged (for rollout), `off` skips the vault. Query
 tools are always guarded when the policy has a data_safety section.
@@ -27,11 +34,16 @@ from ..enums import Exposure
 from .compiled import CompiledPolicy, ToolRule
 from .identity import Principal
 from .state import RunState
-from .vault import ResultVault
+from .vault import ResultVault, VaultError
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+REF_RE = re.compile(r"\{\{(res_[0-9a-f]{8,})\.([A-Za-z_]\w*(?:\[\d+\]|\.[A-Za-z_]\w*)*)\}\}")
+_PATH_PART = re.compile(r"[A-Za-z_]\w*|\[\d+\]")
 HIDDEN_ERROR = {"error": "QUERY_FAILED",
                 "reason": "the query failed to run; check the columns and filters against describe, then retry"}
+# An app error after a call that used a vault reference can quote the resolved value.
+HIDDEN_TOOL_ERROR = {"error": "TOOL_FAILED",
+                     "reason": "the app refused the call; the user can see why in the app"}
 
 
 def bucket(n: int, buckets: list[int]) -> str:
@@ -75,6 +87,39 @@ def rows_of(content: Any) -> list[dict[str, Any]] | None:
     return None
 
 
+def valid_verdict(spec: dict[str, Any], value: Any) -> bool:
+    if spec.get("type") == "boolean":
+        return isinstance(value, bool)
+    return isinstance(value, str) and value in spec.get("values", [])
+
+
+def _follow(content: Any, path: str, handle: str) -> Any:
+    """`amount`, `items[0].sku`, `rows[2].opex`; on a one-row query result, `opex`."""
+    rows = rows_of(content)
+    value: Any = {"rows": rows} if rows is not None else content
+    parts = _PATH_PART.findall(path)
+    if rows is not None and parts and parts[0] != "rows":
+        if len(rows) != 1:
+            raise VaultError("REFERENCE_INVALID", f"{handle} has {len(rows)} rows; name one: rows[0].{path}")
+        value = rows[0]
+    for part in parts:
+        if part.startswith("["):
+            i = int(part[1:-1])
+            ok = isinstance(value, list) and i < len(value)
+            value = value[i] if ok else None
+        else:
+            ok = isinstance(value, dict) and part in value
+            if not ok and isinstance(value, dict):  # column names are case-blind
+                match = next((k for k in value if str(k).lower() == part.lower()), None)
+                ok, part = match is not None, match
+            value = value[part] if ok else None
+        if not ok:
+            raise VaultError("REFERENCE_INVALID", f"{handle}.{path} names nothing in that result")
+    if isinstance(value, (dict, list)):
+        raise VaultError("REFERENCE_INVALID", f"{handle}.{path} is not a single value")
+    return value
+
+
 @dataclass
 class Prepared:
     args: dict[str, Any]  # what the upstream gets
@@ -98,7 +143,46 @@ class DataShield:
         self.egress = None  # set by the gateway: remembers hidden values for the egress guard
 
     def governed(self, rule: ToolRule) -> bool:
-        return self.enabled and self.results != "off" and bool(rule.query or rule.reads)
+        return self.enabled and self.results != "off" and bool(rule.query or rule.reads or rule.verdicts)
+
+    # ------------------------------------------------------------------ value references
+
+    def resolve_refs(self, principal: Principal, args: Any) -> tuple[Any, int]:
+        """Replace `{{res_<id>.<path>}}` with the vaulted value. An argument that is exactly
+        one reference takes the value's type; a reference inside text becomes text.
+        Raises VaultError (RESULT_NOT_FOUND, REFERENCE_INVALID)."""
+        if not self.enabled or self.results == "off":
+            return args, 0
+        cache: dict[str, Any] = {}
+        count = 0
+
+        def lookup(handle: str, path: str) -> Any:
+            if handle not in cache:
+                cache[handle] = self.vault.get(handle, principal).content
+            return _follow(cache[handle], path, handle)
+
+        def walk(value: Any) -> Any:
+            nonlocal count
+            if isinstance(value, str):
+                whole = REF_RE.fullmatch(value.strip())
+                if whole:
+                    count += 1
+                    return lookup(whole.group(1), whole.group(2))
+
+                def sub(m: re.Match) -> str:
+                    nonlocal count
+                    count += 1
+                    return str(lookup(m.group(1), m.group(2)))
+
+                return REF_RE.sub(sub, value)
+            if isinstance(value, dict):
+                return {k: walk(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [walk(v) for v in value]
+            return value
+
+        out = walk(args)
+        return out, count
 
     # ------------------------------------------------------------------ before the call
 
@@ -197,15 +281,22 @@ class DataShield:
         if suppressed:
             out["suppressed_small_groups"] = True
         out["next"] = (f"Values are hidden from you. Show the user the table from {handle}, and write numbers "
-                       f"as {{{{{handle}.<column>}}}} placeholders; never state them yourself.")
+                       f"as {{{{{handle}.<column>}}}} placeholders; never state them yourself. To pass a value "
+                       f"to a tool, use {{{{{handle}.rows[<n>].<column>}}}} as the argument.")
         return out
 
     def shape_json(self, principal: Principal, run_id: str, rule: ToolRule, content: Any,
                    handle: str) -> dict[str, Any]:
         exposures = self._exposures(rule)
+        verdicts = {k.lower(): v for k, v in rule.verdicts.items()}
         hidden: set[str] = set()
 
         def walk(value: Any, key: str | None) -> tuple[bool, Any]:
+            if key is not None and key.lower() in verdicts:
+                if valid_verdict(verdicts[key.lower()], value):
+                    return True, value
+                hidden.add(key)  # not the declared type: the app may be returning a value
+                return False, None
             e = exposures.get(key.lower()) if key is not None else None
             if e is not None and e is not Exposure.ALLOWED:
                 ok, v = self._visible(value, e, key.lower(), principal, run_id, aggregate_ok=False)
@@ -230,6 +321,9 @@ class DataShield:
             out["result"] = shown
         if hidden:
             out["hidden_keys"] = sorted(hidden)
+            key = sorted(hidden)[0]
+            out["next"] = (f"Hidden values stay hidden from you. To pass one to a tool, write "
+                           f"{{{{{handle}.{key}}}}} as the argument; the gateway fills it in.")
         return out
 
     def store(self, principal: Principal, run_id: str, tool: str, content: Any, guarded=None) -> str:

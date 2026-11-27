@@ -21,7 +21,7 @@ def lookup_order(order_id: str) -> dict:
     """Look up one order by its absolute order id and return status, items, amounts, shipment events and payment method. Use before any refund decision."""
     if not order_id.startswith("ORD-"):
         return {"error": "order_id must be absolute, e.g. ORD-2026-000184"}
-    return {"order_id": order_id, "status": "delivered", "amount": 49.90, "currency": "EUR"}
+    return {"order_id": order_id, "status": "delivered", "refundable": True, "amount": 49.90, "currency": "EUR"}
 
 
 @mcp.tool(annotations=READ_ONLY)

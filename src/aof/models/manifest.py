@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, NonNegativeFloat, PositiveInt, field_validator
+from pydantic import Field, NonNegativeFloat, PositiveInt, field_validator, model_validator
 
 from ..enums import Access, ApprovalMode, Exposure, Reversibility, RiskTier
 from .base import Strict
@@ -77,7 +77,26 @@ class Tool(Strict):
     # Result keys that are not data-contract fields (status, ids): how much the model may
     # see. Keys in neither a contract nor here are hidden (docs/data-safety.md).
     result_keys: dict[str, Exposure] = {}
+    # Decisions the app computes over values the agent may not see (DS8): typed outputs the
+    # gateway shows in every mode, dropping any value outside the declared type.
+    verdicts: dict[str, "VerdictSpec"] = {}
     params: dict[str, Param] = {}
+
+
+class VerdictSpec(Strict):
+    """A boolean, or one of a few named values (`eligible`, `within_policy`, `status`)."""
+
+    type: Literal["boolean", "enum"]
+    values: list[str] = []  # enum only
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _shape(self) -> "VerdictSpec":
+        if self.type == "enum" and len(set(self.values)) < 2:
+            raise ValueError("an enum verdict needs at least two distinct values")
+        if self.type == "boolean" and self.values:
+            raise ValueError("a boolean verdict takes no values")
+        return self
 
 
 class ToolManifest(Strict):
@@ -101,3 +120,4 @@ class ToolManifest(Strict):
     @property
     def write_tools(self) -> list[Tool]:
         return [t for t in self.tools if t.access is Access.WRITE]
+Tool.model_rebuild()

@@ -19,7 +19,7 @@ from .engine import Action, PolicyEngine, Verdict, effective_decision, effective
 from .identity import Principal
 from .egress import EgressGuard
 from .obo import OboBroker, TokenExchangeError
-from .shield import HIDDEN_ERROR, DataShield
+from .shield import HIDDEN_ERROR, HIDDEN_TOOL_ERROR, DataShield
 from .state import GatewayState
 from .telemetry import tool_span
 from .vault import ResultVault, VaultError
@@ -133,6 +133,16 @@ class Gateway:
                        user_id=principal.user_id) as span:
             # Count the step first (atomic across replicas), then decide; kill-switch denials are free.
             step = None if self.state.killed(self.agent_id) else int(run.add("steps"))
+            if step is not None and self.shield is not None:
+                # Vault references resolve before the policy, so limits see the real values.
+                try:
+                    args, refs = self.shield.resolve_refs(principal, args)
+                except VaultError as exc:
+                    span.set_error(exc.code)
+                    self.audit.append("reference_refused", **base, code=exc.code)
+                    return ToolResult({"error": exc.code, "reason": str(exc)}, is_error=True)
+                if refs:
+                    base["references"] = refs
             verdict = self.engine.evaluate(principal, tool, args, run, now, delegation_depth, step=step)
             span.set_attribute("aof.decision", verdict.action.value)
             span.set_attribute("aof.code", verdict.code)
@@ -191,11 +201,16 @@ class Gateway:
         """Vault a governed result. Returns what the agent may see and fields for the audit
         record (handle, row bucket, hidden keys: metadata, never values)."""
         shield = self.shield
-        if shield is None or not shield.governed(rule):
+        # A call that used a vault reference is shaped even for an ungoverned tool, so the
+        # app can't echo the resolved value back to the agent.
+        if shield is None or not (shield.governed(rule) or base.get("references")):
             return result, {}
         if result.is_error:
-            return (ToolResult(dict(HIDDEN_ERROR), is_error=True), {"result": "error_hidden"}) if rule.query \
-                else (result, {})
+            if rule.query:
+                return ToolResult(dict(HIDDEN_ERROR), is_error=True), {"result": "error_hidden"}
+            if base.get("references"):
+                return ToolResult(dict(HIDDEN_TOOL_ERROR), is_error=True), {"result": "error_hidden"}
+            return result, {}
         try:
             handle, shaped = shield.shape(principal, base["run_id"], rule, result.content, guarded)
         except VaultError as exc:
@@ -226,8 +241,10 @@ class Gateway:
             dry = await self.upstream.call_tool(tool, {**up_args, "dry_run": True}, **kw)
             if dry.is_error:
                 self.audit.append("dry_run_failed", **base)
-                return ToolResult({"error": "DRY_RUN_FAILED", "reason": "the preview failed; fix the call first",
-                                   "upstream": dry.content}, is_error=True)
+                out = {"error": "DRY_RUN_FAILED", "reason": "the preview failed; fix the call first"}
+                if not base.get("references"):  # the app's message can quote a resolved value
+                    out["upstream"] = dry.content
+                return ToolResult(out, is_error=True)
             preview = dry.content
             shaped, preview_fields = self._shape(principal, rule, dry, None, base, span)
             agent_preview = shaped.content

@@ -14,6 +14,11 @@ tools:
     rate_limit: {calls: 60, per: minute}
     approval: {mode: sampled, sample_rate: 0.05}
     reads: ["order_facts"]
+    # Decisions the agent may see even when data safety hides the order's values (DS8).
+    # It passes amounts on as {{<result_handle>.amount}}; the gateway fills them in.
+    verdicts:
+      status: {type: enum, values: [delivered, in_transit, lost, returned]}
+      refundable: {type: boolean, description: "within the refund window and not refunded before"}
     params:
       order_id: {type: string, description: "Absolute order id, e.g. ORD-2026-000184"}
 

@@ -27,7 +27,7 @@ from .enums import (
 )
 from .findings import Finding, error, info, warning
 from .models import Project, Tool, ToolManifest
-from .datasafety import views_from_contracts
+from .datasafety import effective_classification, views_from_contracts
 from .models.data_contract import DataContract
 from .models.project import A2aConfig
 from .platform import PlatformConfig
@@ -236,11 +236,58 @@ def _check_data_safety(project: Project, manifest: ToolManifest, platform: Platf
     return out
 
 
+def exposure_exceptions(project: Project, platform: PlatformConfig) -> dict[str, Exposure]:
+    """Signed exceptions in force: only under metadata_only (contract mode doesn't need them)."""
+    if data_safety_mode(project, platform) is not DataSafetyMode.METADATA_ONLY:
+        return {}
+    return {e.field: e.exposure for e in project.data_safety.exceptions}
+
+
+def check_ds8(project: Project, manifest: ToolManifest, platform: PlatformConfig,
+              contracts: Iterable[DataContract]) -> list[Finding]:
+    """Exceptions (P077, P078) and verdicts (P079): how a value-blind agent still decides."""
+    ds, out = platform.data_safety, []
+    tools = {t.name: t for t in manifest.tools}
+    for e in project.data_safety.exceptions:
+        owner, key = e.field.split(".", 1)
+        tool = tools.get(owner)
+        if tool is not None:
+            if key not in tool.result_keys:
+                out.append(error("AOF-P077", "aof.yaml", f"exception {e.field}: {owner} declares no result key {key}"))
+            elif e.exposure > tool.result_keys[key]:
+                out.append(error("AOF-P078", "aof.yaml",
+                                 f"exception {e.field} asks for {e.exposure.value}; the manifest declares "
+                                 f"{tool.result_keys[key].value}", "an exception lifts metadata_only, not the manifest"))
+        else:
+            dc = next((c for c in contracts if c.name == owner), None)
+            f = dc.field(key) if dc else None
+            if f is None:
+                out.append(error("AOF-P077", "aof.yaml", f"exception {e.field} names no data-contract field or tool "
+                                                         "result key"))
+            else:
+                limit = f.llm_exposure or ds.default_exposure[effective_classification(f)]
+                if e.exposure > limit:
+                    out.append(error("AOF-P078", "aof.yaml",
+                                     f"exception {e.field} asks for {e.exposure.value}; the contract allows "
+                                     f"{limit.value}", "an exception lifts metadata_only, not the contract or "
+                                                       "the platform ceiling"))
+    for t in manifest.tools:
+        for name, v in t.verdicts.items():
+            where = f"tools.manifest:{t.name}"
+            if v.type == "enum" and len(set(v.values)) > ds.max_verdict_values:
+                out.append(error("AOF-P079", where, f"verdict {name} has {len(set(v.values))} values; the platform "
+                                                    f"allows {ds.max_verdict_values}",
+                                 "a verdict is a decision, not a way to return the value"))
+            if name in t.result_keys:
+                out.append(error("AOF-P079", where, f"{name} is both a verdict and a result key"))
+    return out
+
+
 def _compile_data_safety(project: Project, manifest: ToolManifest, platform: PlatformConfig,
                          contracts: Iterable[DataContract]) -> dict[str, Any]:
     ds = platform.data_safety
     mode = data_safety_mode(project, platform)
-    views = views_from_contracts(contracts, ds.default_exposure, mode)
+    views = views_from_contracts(contracts, ds.default_exposure, mode, exposure_exceptions(project, platform))
     return {
         "mode": mode.value,
         "results": data_safety_results(project, platform),
@@ -367,9 +414,18 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             entry["query"] = t.query.model_dump()
         if t.result_keys:
             strict = data_safety_mode(project, platform) is DataSafetyMode.METADATA_ONLY
-            entry["result_keys"] = {  # metadata_only clamps these like contract fields
-                k: (v if not strict or v is Exposure.TOKEN else Exposure.NONE).value
-                for k, v in t.result_keys.items()}
+            signed = exposure_exceptions(project, platform)
+
+            def clamp(k: str, v: Exposure) -> Exposure:  # metadata_only clamps these like contract fields
+                if not strict or v is Exposure.TOKEN:
+                    return v
+                e = signed.get(f"{t.name}.{k}")
+                return min(e, v) if e is not None else Exposure.NONE
+
+            entry["result_keys"] = {k: clamp(k, v).value for k, v in t.result_keys.items()}
+        if t.verdicts:  # shown in every mode; the gateway drops values outside the type
+            entry["verdicts"] = {k: v.model_dump(exclude_defaults=True) | {"type": v.type}
+                                 for k, v in t.verdicts.items()}
         tools.append(entry)
 
     return {

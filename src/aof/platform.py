@@ -158,6 +158,8 @@ class DataSafetyCfg(Strict):
     provider: ProviderCfg = ProviderCfg()
     vault: VaultCfg = VaultCfg()
     egress: EgressCfg = EgressCfg()
+    # DS8: an enum verdict carries at most log2(values) bits per call; keep it small.
+    max_verdict_values: int = Field(default=8, ge=2)
     query: QueryLimitsCfg
 
     @model_validator(mode="after")

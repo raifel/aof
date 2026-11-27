@@ -434,6 +434,83 @@ def cmd_pilot_report(args) -> int:
     return 0
 
 
+def _jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.is_file() else []
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def cmd_harvest_cases(args) -> int:
+    """Candidate eval cases from an agent's audited incidents (aof/harvest.py), or with
+    --accept, move reviewed candidates into the suite."""
+    from ..harvest import harvest, to_suite_case, unreviewed
+    from ..loader import load_project
+
+    lp = load_project(Path(args.app_dir))
+    if lp.eval_suite is None:
+        print("the app has no eval suite (artefacts.eval_suite in aof.yaml)", file=sys.stderr)
+        return 2
+    out = Path(args.output) if args.output else lp.root / "evals/candidates.jsonl"
+    previous = _jsonl(out)
+    if args.accept:
+        return _accept(lp, out, previous, args.accept.split(","), to_suite_case, unreviewed)
+
+    if not args.since:
+        print("--since is required (first day to harvest, YYYY-MM-DD)", file=sys.stderr)
+        return 2
+    agent = args.agent or f"agent:{lp.project.app.name}"
+    start = dt.date.fromisoformat(args.since)
+    end = dt.date.fromisoformat(args.until) if args.until else dt.date.today()
+    lo = dt.datetime.combine(start, dt.time.min).timestamp()
+    hi = dt.datetime.combine(end, dt.time.max).timestamp()
+    records = [r for f in sorted(Path(args.state_dir).glob("audit*.jsonl")) for r in AuditLog(f).read()
+               if lo <= r.get("ts", 0) <= hi and r.get("agent") == agent]
+    known = {c.harvested_from for c in [*lp.golden_cases, *lp.safety_cases] if c.harvested_from}
+    candidates = harvest(records, known=known, previous=previous)
+    _write_jsonl(out, candidates)
+    new = sum(1 for c in candidates if c["id"] not in {p.get("id") for p in previous})
+    print(f"{len(candidates)} candidate(s) in {out} ({new} new) from {len(records)} audit record(s) of {agent}, "
+          f"{start} to {end}")
+    for c in candidates:
+        s = c["source"]
+        print(f"  {c['id']}  {c['kind']:<6}  {s['count']:>4}x  {c['harvested_from']}")
+    if candidates:
+        print("Fill in each `input` from a run in source.runs (the app's conversation log), then "
+              "`aof gateway harvest-cases <app> --accept <id>,...`")
+    return 0
+
+
+def _accept(lp, out: Path, previous: list[dict], ids: list[str], to_suite_case, unreviewed) -> int:
+    by_id = {c.get("id"): c for c in previous}
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        print(f"no such candidate(s) in {out}: {', '.join(missing)}", file=sys.stderr)
+        return 1
+    todo = {i: unreviewed(by_id[i]) for i in ids if unreviewed(by_id[i])}
+    if todo:
+        for i, fields in todo.items():
+            print(f"{i}: {', '.join(fields)} still TODO", file=sys.stderr)
+        return 1
+    taken = {c.id for c in [*lp.golden_cases, *lp.safety_cases]}
+    clash = [i for i in ids if i in taken]
+    if clash:
+        print(f"the suite already has case id(s) {', '.join(clash)}", file=sys.stderr)
+        return 1
+    suite = lp.eval_suite
+    for i in ids:
+        c = by_id[i]
+        path = lp.root / (suite.safety_cases if c.get("kind") == "safety" else suite.golden_set)
+        with path.open("a") as fh:
+            fh.write(json.dumps(to_suite_case(c)) + "\n")
+        print(f"{i} -> {path.relative_to(lp.root)}")
+    _write_jsonl(out, [c for c in previous if c.get("id") not in ids])
+    print("Run `aof validate`, then `aof eval`: the new cases make the old results stale (AOF-G045).")
+    return 0
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     g = sub.add_parser("gateway", help="run and operate the agent gateway")
     gs = g.add_subparsers(dest="gateway_cmd", required=True)
@@ -526,6 +603,16 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--until", help="last day (default: today)")
     s.add_argument("-o", "--output", help="e.g. evals/pilot.json (default: print)")
     s.set_defaults(fn=cmd_pilot_report)
+
+    s = with_state(gs.add_parser("harvest-cases", help="candidate eval cases from audited denials, rejected "
+                                                       "proposals and probe signals"))
+    s.add_argument("app_dir")
+    s.add_argument("--since", help="first day to harvest (YYYY-MM-DD)")
+    s.add_argument("--until", help="last day (default: today)")
+    s.add_argument("--agent", help="the agent id in the audit log (default: agent:<app name>)")
+    s.add_argument("-o", "--output", help="candidates file (default: <app>/evals/candidates.jsonl)")
+    s.add_argument("--accept", help="comma-separated reviewed candidate ids to move into the suite")
+    s.set_defaults(fn=cmd_harvest_cases)
 
     s = with_state(gs.add_parser("audit", help="show or verify the audit log"))
     s.add_argument("--verify", action="store_true")

@@ -39,6 +39,7 @@ class GoldenCase(Strict):
     ordered: bool = False  # expected_rows must come in this order
     expected_tools: list[str] = []
     tags: list[str] = []  # include "edge_case" for edge cases
+    harvested_from: str | None = None  # the production incident group (aof/harvest.py)
 
     @model_validator(mode="after")
     def _something_expected(self) -> "GoldenCase":
@@ -53,6 +54,7 @@ class SafetyCase(Strict):
     asi: list[str] = Field(min_length=1)  # ASI01..ASI10
     ds: list[str] = []  # data-safety categories DS01..DS07
     expected: str  # refuse | no_write | block | ask_approval | no_leak
+    harvested_from: str | None = None  # the production incident group (aof/harvest.py)
 
     @field_validator("ds")
     @classmethod

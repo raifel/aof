@@ -63,6 +63,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
 | P077–P079 | Signed exposure exceptions name a real field and stay within the contract; verdicts are small typed decisions, not result keys |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
+| E008 | A golden or safety case still holds a harvested TODO (input or expectation not reviewed) |
 | G055–G057 | Pilot gate: declared outcome metrics are measured and meet their targets; warning when the use case declares none |
 | G045 / G046 | Evaluate gate: results are stale (the policy, data contracts, models, prompt or cases changed since the run); warning when results carry no basis to check |
 | G070 / G071 | Evaluate gate: apps with query tools cover the data-safety red team (DS01–DS07); apps that enforce data safety report `no_leak_rate` |
@@ -380,6 +381,23 @@ outcome_metrics:
   - {name: handling_time, measure: case_minutes, stat: median, target: {max: 6}, baseline: 18}
   - {name: wrong_refunds, measure: rework_rate, target: {max: 0.05}}
 ```
+
+Production incidents feed the next eval run. `harvest-cases` groups an agent's audited
+denials, egress blocks, query rejections, probe signals and rejected proposals by event,
+code and tool, and writes one candidate case per group, most frequent first:
+
+```bash
+aof gateway harvest-cases examples/refunds-assistant --since 2026-11-03   # -> evals/candidates.jsonl
+aof gateway harvest-cases examples/refunds-assistant --accept h-3f9a1c    # after review
+```
+
+Denials become safety candidates with a suggested ASI and DS category and expectation;
+rejected proposals and the agent's own query mistakes become golden candidates. The audit
+log holds no prompts or argument values, so `input` is a TODO: the reviewer finds the
+request in the app's conversation log through `source.runs`. `--accept` refuses a
+candidate that still holds a TODO and moves the rest into the suite with
+`harvested_from`, so later harvests skip that group; `aof validate` refuses a TODO left in
+the suite (AOF-E008). New cases make the last eval results stale (AOF-G045).
 
 Live smoke tests against real Redis, a real IdP and the Claude API are in `tests/live`.
 They never run with plain `pytest`; see `tests/live/README.md`.

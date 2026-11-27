@@ -6,6 +6,7 @@ import re
 
 from pydantic import ValidationError
 
+from .harvest import unreviewed
 from .enums import ASI_RISKS, AutonomyLevel, Classification, Exposure, RiskTier
 from .findings import Finding, Report, error, info, warning
 from .lint import lint_manifest
@@ -242,6 +243,12 @@ def check_evals_static(lp: LoadedProject, platform: PlatformConfig) -> list[Find
         out.append(warning("AOF-E007", suite.safety_cases,
                            f"red-team cases do not cover {', '.join(missing)}",
                            "the evaluate gate requires all of ASI01-ASI10"))
+    for path, cases in ((suite.golden_set, lp.golden_cases), (suite.safety_cases, lp.safety_cases)):
+        for c in cases:
+            todo = unreviewed(c.model_dump())
+            if todo:
+                out.append(error("AOF-E008", f"{path}:{c.id}", f"unreviewed case: {', '.join(todo)} still TODO",
+                                 "fill it in from the run named in evals/candidates.jsonl, or remove the case"))
     return out
 
 

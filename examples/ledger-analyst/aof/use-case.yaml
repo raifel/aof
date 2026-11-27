@@ -8,6 +8,12 @@ actions:
 cost_of_error: "A wrong figure in a management report; caught at month-end close against the trial balance"
 errors_reversible: true
 requested_autonomy: L1
+outcome_metrics:
+  - name: time_to_figures
+    measure: case_minutes
+    stat: p90
+    target: {max: 1}
+    baseline: 2880               # a two-day report request
 triage:
   accepted_by: platform-team
   date: 2026-11-10

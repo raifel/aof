@@ -63,6 +63,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
 | P077–P079 | Signed exposure exceptions name a real field and stay within the contract; verdicts are small typed decisions, not result keys |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
+| G055–G057 | Pilot gate: declared outcome metrics are measured and meet their targets; warning when the use case declares none |
 | G045 / G046 | Evaluate gate: results are stale (the policy, data contracts, models, prompt or cases changed since the run); warning when results carry no basis to check |
 | G070 / G071 | Evaluate gate: apps with query tools cover the data-safety red team (DS01–DS07); apps that enforce data safety report `no_leak_rate` |
 
@@ -367,6 +368,18 @@ aof gateway pilot-report agent:refunds-assistant --since 2026-11-03 -o evals/pil
 
 It counts proposals, the share a human approved (`agreement_rate`) and incidents (kill
 switch or demotion) across every replica's audit log.
+
+It also measures what the business outcome is stated in: case time (first call to the
+human's decision), agent time, approval wait, steps, cost and denials per run, approval
+and rework rates. The use-case card names which ones prove the outcome, and the pilot gate
+checks them (AOF-G056 when a target is missed, G055 when it can't be measured, G057 as a
+warning when none is declared):
+
+```yaml
+outcome_metrics:
+  - {name: handling_time, measure: case_minutes, stat: median, target: {max: 6}, baseline: 18}
+  - {name: wrong_refunds, measure: rework_rate, target: {max: 0.05}}
+```
 
 Live smoke tests against real Redis, a real IdP and the Claude API are in `tests/live`.
 They never run with plain `pytest`; see `tests/live/README.md`.

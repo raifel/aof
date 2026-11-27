@@ -9,6 +9,13 @@ actions:
 cost_of_error: "TODO: what a wrong answer costs and who catches it"
 errors_reversible: true
 requested_autonomy: L0
+# How the pilot measures business_outcome from the gateway's audit log (pilot gate, AOF-G056).
+# outcome_metrics:
+#   - name: time_to_answer
+#     measure: case_minutes      # case_minutes, agent_minutes, approval_wait_minutes, steps_per_run,
+#     stat: median               # cost_usd_per_run, denials_per_run, approval_rate, rework_rate
+#     target: {max: 5}
+#     baseline: 2880
 # triage:                      # platform team only
 #   accepted_by: platform-team
 #   date: {{date}}

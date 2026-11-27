@@ -417,10 +417,13 @@ def cmd_pilot_report(args) -> int:
         print(f"no human decisions for {args.agent} between {start} and {end}: nothing to report",
               file=sys.stderr)
         return 1
+    from ..outcomes import compute_measures
+
     report = {
         "window_start": start.isoformat(), "window_end": end.isoformat(), "proposals": proposals,
         "agreement_rate": round(approved / len(decided), 4), "incidents": incidents,
         "decided": len(decided), "approved": approved, "source": "aof gateway audit logs",
+        "measures": compute_measures(records),  # what use-case outcome_metrics are checked against
     }
     text = json.dumps(report, indent=2) + "\n"
     if args.output:

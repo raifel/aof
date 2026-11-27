@@ -15,6 +15,7 @@ from .findings import Finding, Report, error, info, warning
 from .loader import LoadedProject
 from .platform import PlatformConfig
 from .evalbasis import stale_reasons
+from .outcomes import RATES, measured
 from .policy import data_safety_results
 
 GATE_NAMES = {
@@ -170,6 +171,32 @@ def _pilot(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:
     cap = cfg.max_incidents.get(p.risk_tier)
     if cap is not None and pr.incidents > cap:
         out.append(error("AOF-G054", where, f"{pr.incidents} incidents; max {cap}"))
+    out += _outcomes(lp, pr)
+    return out
+
+
+def _outcomes(lp: LoadedProject, pr) -> list[Finding]:
+    """The business outcome promised at intake, checked against what the pilot measured."""
+    where = lp.project.artefacts.pilot_results
+    metrics = lp.use_case.outcome_metrics if lp.use_case else []
+    if not metrics:
+        return [warning("AOF-G057", "use-case", "the business outcome isn't measured",
+                        "declare outcome_metrics in the use-case card; the pilot report measures them")]
+    out: list[Finding] = []
+    for m in metrics:
+        stat = "" if m.measure in RATES else f"{m.stat} "
+        got = measured(pr.measures, m.measure, m.stat)
+        if got is None:
+            out.append(error("AOF-G055", where, f"outcome {m.name}: the pilot results have no {m.measure}",
+                             "write them with `aof gateway pilot-report`"))
+            continue
+        base = f" (baseline {m.baseline:g})" if m.baseline is not None else ""
+        if m.target.max is not None and got > m.target.max:
+            out.append(error("AOF-G056", where, f"outcome {m.name}: {stat}{m.measure} {got:g}, target at most "
+                                                f"{m.target.max:g}{base}"))
+        if m.target.min is not None and got < m.target.min:
+            out.append(error("AOF-G056", where, f"outcome {m.name}: {stat}{m.measure} {got:g}, target at least "
+                                                f"{m.target.min:g}{base}"))
     return out
 
 

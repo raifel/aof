@@ -8,6 +8,16 @@ actions:
 cost_of_error: "A wrong refund costs the order value plus a reversal fee; the payments team catches it in daily reconciliation"
 errors_reversible: true
 requested_autonomy: L2
+# business_outcome in a form the pilot measures from the gateway's audit log (pilot gate)
+outcome_metrics:
+  - name: handling_time
+    measure: case_minutes        # first call to the support lead's decision
+    stat: median
+    target: {max: 6}
+    baseline: 18
+  - name: wrong_refunds          # a refund the lead rejects is one the agent got wrong
+    measure: rework_rate
+    target: {max: 0.05}
 triage:
   accepted_by: platform-team
   date: 2026-09-15

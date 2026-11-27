@@ -84,3 +84,5 @@ class PilotResults(Open):
     proposals: NonNegativeInt
     agreement_rate: float = Field(ge=0, le=1)
     incidents: NonNegativeInt
+    # aof/outcomes.py measures from the audit log: {measure: {n, median, p90, mean} | {n, value}}
+    measures: dict[str, dict[str, float]] | None = None

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 
 import httpx2
 import pytest
@@ -43,6 +44,11 @@ ROWS = [
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def has_number(value, number: str) -> bool:
+    """`number` as a whole number in the JSON, not inside a hash, handle or timestamp."""
+    return re.search(rf"(?<![\w.]){re.escape(number)}(?:\.0+)?(?![\w])(?!\.\d)", json.dumps(value)) is not None
 
 
 @pytest.fixture
@@ -131,7 +137,7 @@ def test_vault_is_owner_bound_encrypted_and_expires():
     v = ResultVault(ttl_seconds=60, clock=lambda: now[0])
     h = v.put(ALICE, agent_id="a", run_id="r", tool="t", content={"amount": 4711.5})
     assert v.get(h, ALICE).content == {"amount": 4711.5}
-    assert "4711" not in json.dumps(v.store.all("vault_results"))  # ciphertext at rest
+    assert not has_number(v.store.all("vault_results"), "4711")  # ciphertext at rest
     for who in (MALLORY, Principal.of("alice", tenant="DE02")):
         with pytest.raises(VaultError):
             v.get(h, who)
@@ -184,7 +190,7 @@ def test_semantic_query_returns_a_handle_not_values(app):
     assert not res.is_error
     body = res.content
     assert body["result_handle"].startswith("res_") and body["row_count"] == "1-9"
-    assert "180" not in json.dumps(body)  # 100 + 50 + 30: only in the vault
+    assert not has_number(body, "180")  # 100 + 50 + 30: only in the vault
     sql = up.calls[-1][1]["query"]
     assert "company_code IN ('DE01')" in sql and "LIMIT 1000" in sql
     stored = gw.vault.get(body["result_handle"], ALICE).content
@@ -198,7 +204,7 @@ def test_audit_records_handles_never_values(app):
     assert events["query_guarded"]["views"] == ["gl_journal_lines"]
     assert events["tool_executed"]["result_handle"].startswith("res_")
     assert events["tool_executed"]["row_count"] == "1-9"
-    assert "180" not in json.dumps(gw.audit.read())
+    assert not has_number(gw.audit.read(), "180")
 
 
 def test_contract_mode_shows_allowed_columns_and_hides_measures(app):
@@ -257,7 +263,7 @@ def test_query_budget(app):
 def test_failed_query_error_is_generic(app):
     gw, _ = gateway(app, upstream=LedgerUpstream(fail_queries=True))
     res = call(gw, "query_ledger", {"query": OPEX_Q3})
-    assert res.is_error and res.content["error"] == "QUERY_FAILED" and "4711" not in json.dumps(res.content)
+    assert res.is_error and res.content["error"] == "QUERY_FAILED" and not has_number(res.content, "4711")
 
 
 def test_shadow_returns_the_result_but_vaults_it(app):

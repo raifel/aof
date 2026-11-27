@@ -1,0 +1,14 @@
+title: "Ledger questions in plain language"
+business_outcome: "Controllers get opex, revenue and budget figures in under a minute instead of a 2-day report request, and no ledger amount is sent to the model provider"
+users: ["controllers", "cost-centre owners"]
+systems_touched: ["Snowflake FINANCE.GL", "Snowflake FINANCE.PLANNING"]
+actions:
+  read: ["aggregate journal lines by metric, cost centre, account, vendor and period", "aggregate budgets"]
+  write: []
+cost_of_error: "A wrong figure in a management report; caught at month-end close against the trial balance"
+errors_reversible: true
+requested_autonomy: L1
+triage:
+  accepted_by: platform-team
+  date: 2026-11-10
+  assigned_risk_tier: T2

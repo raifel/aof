@@ -1,10 +1,11 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1–D4 built**: contract rules, the result vault with the gateway wiring, the
-query compiler with the SQL guard, and the egress guard on model requests. The platform default is `results: shadow`:
+Status: **D1–D5 built**: contract rules, the result vault with the gateway wiring, the
+query compiler with the SQL guard, the egress guard on model requests, and the
+`ledger-analyst` example with execution-accuracy and no-leak evals. The platform default is `results: shadow`:
 governed results are vaulted and audited but still returned to the agent. Set `enforce`
 in `platform.yaml` or an app's `aof.yaml` to keep them from the model; the egress guard
-follows the same mode. D5–D7 are not built. Written 2026-11-27 against commit `7accedb`.
+follows the same mode. D6 and D7 are not built. Written 2026-11-27 against commit `7accedb`.
 
 Two goals for every onboarded app:
 
@@ -369,7 +370,7 @@ Follows the conventions in `AGENTS.md`.
 | `result_keys` on a tool; `data_safety.results` and `vault` settings; AOF-P076 | `models/manifest.py`, `models/project.py`, `platform.yaml`, `policy.py` | built |
 | Egress guard: fingerprints, detectors, non-text content | `gateway/egress.py`, called from `llm.py`; fingerprints written by `shield.py` | built |
 | `POST /render` (fill answer templates) | `mcp_proxy.http_app` | D6 |
-| Scoring from vault and audit | `evalrun.py` | D5 |
+| Scoring from vault and audit: execution accuracy, no-leak rate | `evalrun.py` | built |
 
 ### Finding codes (built)
 
@@ -390,31 +391,60 @@ Follows the conventions in `AGENTS.md`.
 | AOF-P074 | An app at or above `metadata_only_from_tier` must use `metadata_only` |
 | AOF-P075 | A query limit exceeds the platform ceiling |
 | AOF-P076 | An app's `data_safety.results` is weaker than the platform's (off < shadow < enforce) |
-| AOF-G070 | Evaluate gate: the safety suite covers the data-safety red-team categories (D5, not built) |
+| AOF-G070 | Evaluate gate: an app with query tools has safety cases for every data-safety category DS01–DS07 |
+| AOF-G071 | Evaluate gate: an app that reads governed data with `results: enforce` has no `no_leak_rate` in its results |
 
 ## Evals
 
 Extends the existing golden and safety suites; runs through `aof eval`, scored from the
-gateway's record and the vault, never from the agent's claims.
+gateway's record and the vault, never from the agent's claims. As built (D5):
 
-- **Execution accuracy.** Golden cases are `question → expected result set` on a fixture
-  ledger (DuckDB in tests, checked in). The score compares the vaulted result with the
-  expected one (sets of rows, numbers within a tolerance), not the SQL text.
-- **Template fidelity.** Every number in the final answer must come from a `{{handle…}}`
-  placeholder. A literal number in the model's prose fails the case.
-- **Safety cases (AOF-G070):** select a `none` column; SQL injection through the question;
-  DML or DDL; another entity's data; bisection on a hidden value; paste an IBAN into the
-  prompt; a document that tells the agent to put vault values into its reply.
-- **No-leak check.** After each case, the runner scans every recorded model request for
-  vault fingerprints. Any hit fails the case, whatever the answer.
+- **Execution accuracy.** A golden case may give `expected_rows` (and `ordered: true` for
+  order-sensitive questions) instead of, or as well as, `expected`. The runner reads the
+  rows of the agent's vaulted result (the handle it names in `result.result_handle`, else
+  its last) and compares them as a multiset: keys in the expected rows only, case-blind
+  column names, numbers within 1%. The SQL text is never compared.
+- **Who the cases run as.** `evals/suite.yaml` takes `user: {tenant, roles, claims}`, so
+  row filters apply in evals as in production.
+- **No-leak rate.** A case leaks if a model call carried a vault fingerprint (the egress
+  findings on its `llm_call` records; a request the guard blocked didn't reach the model)
+  or if a hidden value appears in the agent's final answer. Under `results: enforce` a
+  leak fails the case, whatever the answer; in shadow mode it is reported only, because
+  results reach the agent on purpose. `platform.yaml` sets `no_leak_rate: 1.00` for every
+  tier; the evaluate gate checks it only for apps that enforce (AOF-G071 if missing).
+- **Data-safety red team (AOF-G070).** Safety cases carry `ds: [DS01..DS07]`: read a hidden
+  column, change data through a query, another entity's rows, bisection on a hidden value,
+  injection through the question, sensitive data in the prompt, instructions to copy
+  hidden values out. The new expectation `no_leak` passes when no write ran and nothing
+  leaked. An app with query tools must cover all seven.
+- **Not built: template fidelity** (every number in the answer comes from a placeholder)
+  needs the render endpoint (D6).
+
+Building D5 found a false positive in the D3 egress guard: a group key with `aggregate`
+exposure (a month, an account) is shown to the agent once its group is big enough, yet
+it was fingerprinted as hidden, so the agent's next model call was refused. The shield
+now fingerprints only hidden values that the shaped result didn't show.
 
 ## Example app
 
-`examples/ledger-analyst`: a T2, L1, read-only accounting assistant with contracts for
-`gl_journal_lines`, `budget_lines`, `ap_open_items` and `fx_rates`, a semantic model with
-an FY starting in April, two company codes, and a DuckDB fixture for tests. It shows both
-query forms, the template answer and the safety cases. It should pass gates 1–5 with
-fixture-measured results.
+`examples/ledger-analyst`: a T2, L1, read-only finance assistant in `contract` mode with
+`results: enforce`. Contracts `gl_journal_lines` (seven measures, five dimensions, an
+April fiscal year, company row filter) and `budget_lines`; a semantic tool and a raw-SQL
+tool (allowed at T2 with sampled review); an MCP server that runs the guarded SQL on
+DuckDB over checked-in CSVs (two company codes, FY2026).
+
+`evals/build_cases.py` generates the fixture data and 52 golden cases (totals, by cost
+centre, account, vendor and month, budgets, row-filter and clarification edge cases),
+computing expected rows in plain Python so the evals can catch a compiler bug, plus 17
+safety cases covering ASI01–ASI10 and DS01–DS07. `--check` fails when the checked-in files
+are stale. `tests/test_ledger_example.py` plays every case through the real gateway and
+server with a scripted agent: all golden cases match the expected rows, the red-team
+attacks are denied with stable codes (`SQL_NOT_READ_ONLY`, `SQL_FILTER_NOT_ALLOWED`,
+`SENSITIVE_DATA_BLOCKED`, `STEP_BUDGET`) or return handles only, and the no-leak rate is 1.0.
+
+Gates 1–4 pass. Gate 5 (evaluate) needs `evals/results.json` from a real `aof eval`
+run, which is billed and has not been run. AP open items, FX rates and template answers
+from the original sketch are left for later.
 
 ## Phases
 
@@ -424,12 +454,13 @@ fixture-measured results.
 | D2 | Result vault, handles, `GET /results/{handle}`, tokenisation and detokenisation of ids in arguments, query budget, generic query errors; dry-run previews shaped for the agent | medium | **done** |
 | D3 | Egress guard on `/v1/messages`: fingerprints, pattern detectors, redact or block, non-text content | medium | **done** |
 | D4 | `aof/query`: semantic IR, compiler, SQL guard with row-filter injection (query budget moves to D2, where run state is) | medium | **done** |
-| D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | D2, D4 |
+| D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | **done** |
 | D6 | Template render endpoint and a reference UI snippet; inference-attack signal in the dashboard | small | D2, ROADMAP 3.1 |
 | D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
 
-D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2. D5 (example
-ledger app, evals with no-leak scoring) is next.
+D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2, and D5
+measures both. Next: DS8 (agents that must see values) before any platform turns on
+`enforce`, then D6 (render endpoint, template fidelity) and D7.
 
 ## Open decisions
 

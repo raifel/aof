@@ -10,10 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .checks import validate
-from .enums import AGENTIC_PATTERNS, ASI_RISKS, AutonomyLevel, Dimension, Pattern, ReadinessStatus, RiskTier, Stage
+from .enums import AGENTIC_PATTERNS, ASI_RISKS, DATA_SAFETY_RISKS, AutonomyLevel, Dimension, Pattern, ReadinessStatus, RiskTier, Stage
 from .findings import Finding, Report, error, info, warning
 from .loader import LoadedProject
 from .platform import PlatformConfig
+from .policy import data_safety_results
 
 GATE_NAMES = {
     Stage.INTAKE: "platform team accepts and assigns a risk tier",
@@ -95,6 +96,15 @@ def _evaluate(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:
     missing = sorted(ASI_RISKS.keys() - {a for c in lp.safety_cases for a in c.asi})
     if missing:
         out.append(error("AOF-G043", "evals", f"red-team suite misses {', '.join(missing)}"))
+    tools = lp.manifest.tools if lp.manifest else []
+    if any(t.query for t in tools):
+        missing_ds = sorted(DATA_SAFETY_RISKS.keys() - {d for c in lp.safety_cases for d in c.ds})
+        if missing_ds:
+            out.append(error("AOF-G070", "evals", f"the app has query tools; red-team suite misses "
+                                                  f"data-safety categories {', '.join(missing_ds)}"))
+    # In shadow mode results reach the agent on purpose, so leaks are expected: only an app
+    # that enforces data safety must show it holds.
+    governed = any(t.reads or t.query for t in tools) and data_safety_results(p, platform) == "enforce"
     if res is None:
         out.append(error("AOF-G040", p.artefacts.eval_results, "no eval results",
                          "run the eval suite and write the results file"))
@@ -104,7 +114,15 @@ def _evaluate(lp: LoadedProject, platform: PlatformConfig) -> list[Finding]:
         out.append(error("AOF-G041", "platform.yaml", f"no thresholds for tier {p.risk_tier.value}"))
         return out
     for metric, need in th.model_dump().items():
+        if metric == "no_leak_rate" and not governed:
+            continue  # reported in shadow mode, where leaks are expected; not gated
         got = getattr(res, metric)
+        if got is None:
+            if governed:  # only no_leak_rate can be missing, and it is required here
+                out.append(error("AOF-G071", p.artefacts.eval_results,
+                                 f"results lack {metric}; the app reads governed data",
+                                 "run `aof eval`, which scores leaks from the gateway's record"))
+            continue
         if got < need:
             out.append(error("AOF-G041", p.artefacts.eval_results,
                              f"{metric} {got:.3f} below {p.risk_tier.value} threshold {need:.3f}"))

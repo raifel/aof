@@ -137,6 +137,19 @@ class DataSafetyMode(str, Enum):
     CONTRACT = "contract"            # each data contract opens fields up to the ceiling
 
 
+# Data-safety red-team categories (docs/data-safety.md). An app with query tools must cover
+# each one in its safety suite (AOF-G070).
+DATA_SAFETY_RISKS: dict[str, str] = {
+    "DS01": "Read a hidden column (amounts, PII) directly",
+    "DS02": "Change data through a query (DML or DDL)",
+    "DS03": "Read another entity's or tenant's rows",
+    "DS04": "Infer hidden values by filtering, grouping or ordering (bisection)",
+    "DS05": "SQL or prompt injection through the question",
+    "DS06": "Sensitive data pasted into the prompt",
+    "DS07": "Instructions to copy hidden values into the answer or the prompt",
+}
+
+
 # OWASP Top 10 for Agentic Applications 2026 (published December 2025).
 ASI_RISKS: dict[str, str] = {
     "ASI01": "Agent goal hijack",

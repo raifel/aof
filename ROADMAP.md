@@ -64,15 +64,16 @@ and [docs/deployment.md](docs/deployment.md). Ordered by risk.
 | 4.9 | mTLS between gateways and signed agent card verification | A2A relies on edge TLS and an unsigned card | medium |
 | 4.10 | Optional guardrail hook for content (prompt-injection and output checks, external DLP classifier) | the gateway limits blast radius; the D3 egress guard checks for data, not for injected instructions | medium |
 
-## 4b. Data safety and natural-language queries (planned)
+## 4b. Data safety and natural-language queries
 
 Plan: [docs/data-safety.md](docs/data-safety.md). Business data stays out of the model
 (result vault, handles, tokenised ids, egress guard), and text-to-SQL for accounting runs
 behind a gateway-side SQL guard. Phases D1–D7 and open decisions DS1–DS7 are tracked there.
-D1 (schema and rules), D2 (result vault and gateway wiring) and D4 (query IR and SQL
-guard) and D3 (egress guard on `/v1/messages`) are done. The platform default is
+D1 (schema and rules), D2 (result vault and gateway wiring), D3 (egress guard on
+`/v1/messages`), D4 (query IR and SQL guard) and D5 (`examples/ledger-analyst`,
+execution-accuracy and no-leak evals) are done. The platform default is
 `results: shadow`; turning on `enforce` is a platform decision (DS8 first: agents that
-must see values). D5 (example ledger app and no-leak evals) is next.
+must see values). Then D6 (render endpoint, template fidelity) and D7.
 
 ## 5. Known limits to revisit later
 

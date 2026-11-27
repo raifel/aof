@@ -1,0 +1,21 @@
+assessed_by: finance-systems
+date: 2026-11-18
+dimensions:
+  capability_surface:
+    status: ready
+    evidence: ["read-only Snowflake role FINANCE_ANALYST_RO"]
+  data:
+    status: ready
+    evidence: ["contracts gl_journal_lines, budget_lines", "semantic views in FINANCE.SEMANTIC"]
+  identity_access:
+    status: ready
+    evidence: ["company codes from the IdP tenant claim", "scope ledger:read"]
+  process_knowledge:
+    status: ready
+    evidence: ["chart of accounts CoA-2026", "fiscal calendar: April start"]
+  risk:
+    status: ready
+    evidence: ["risk tier T2", "results: enforce", "DPIA-118"]
+  evaluation:
+    status: ready
+    evidence: ["evals/golden.jsonl (expected rows computed from the fixture ledger)"]

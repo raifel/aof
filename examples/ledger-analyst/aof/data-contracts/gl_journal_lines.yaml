@@ -1,0 +1,42 @@
+name: gl_journal_lines
+owner: finance-data
+description: "Posted general-ledger journal lines, one per account and cost centre"
+source: "snowflake:FINANCE.GL.JOURNAL_LINES"
+semantic_view: gl_journal_lines
+freshness_sla: 1h
+classification: confidential
+fields:
+  - {name: company_code, type: string, classification: public, llm_exposure: allowed}
+  - {name: cost_centre, type: string, description: "CC10 sales, CC20 engineering, CC30 facilities"}
+  - {name: account_code, type: string, description: "4xxx revenue, 6xxx-7xxx operating expenses"}
+  - {name: posting_date, type: date}
+  - {name: amount_eur, type: "number(18,2)", classification: confidential, description: "debit positive, credit negative"}
+  - {name: vendor_id, type: string, pii: true, llm_exposure: token}
+  - {name: description, type: string, classification: confidential, free_text: true}
+quality: ["balances to the trial balance daily", "no postings to closed periods"]
+row_filter:
+  - {column: company_code, claim: tenant}
+measures:
+  - {name: revenue, field: amount_eur, agg: sum, sign: -1, description: "accounts 4000-4999, credit positive",
+     filter: [{column: account_code, op: between, value: ["4000", "4999"]}]}
+  - {name: opex, field: amount_eur, agg: sum, description: "operating expenses, accounts 6000-7999",
+     filter: [{column: account_code, op: between, value: ["6000", "7999"]}]}
+  - {name: personnel_cost, field: amount_eur, agg: sum,
+     filter: [{column: account_code, op: between, value: ["6100", "6199"]}]}
+  - {name: travel, field: amount_eur, agg: sum,
+     filter: [{column: account_code, op: between, value: ["6200", "6299"]}]}
+  - {name: software, field: amount_eur, agg: sum,
+     filter: [{column: account_code, op: between, value: ["6300", "6399"]}]}
+  - {name: rent, field: amount_eur, agg: sum,
+     filter: [{column: account_code, op: between, value: ["7100", "7199"]}]}
+  - {name: lines, agg: count, description: "number of journal lines"}
+dimensions:
+  - {name: company, field: company_code, required: true, description: "company code, e.g. DE01"}
+  - {name: cost_centre, field: cost_centre}
+  - {name: account, field: account_code}
+  - {name: vendor, field: vendor_id}
+  - {name: posting_date, field: posting_date, time: true}
+fiscal_calendar: {year_start_month: 4, year_named_by: end}
+glossary:
+  opex: "operating expenses: accounts 6000-7999"
+  FY2026: "April 2025 to March 2026"

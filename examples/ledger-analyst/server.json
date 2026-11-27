@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/server.schema.json",
+  "name": "com.example/ledger-analyst",
+  "description": "Semantic and SQL queries over the general ledger and budgets, run as the gateway guards them",
+  "version": "0.1.0",
+  "remotes": [{"type": "streamable-http", "url": "https://mcp.internal.example.com/ledger-analyst/mcp"}],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "aof": {"owner": "finance-systems", "risk_tier": "T2", "autonomy_level": "L1", "on_call": "finance-systems-oncall"}
+    }
+  }
+}

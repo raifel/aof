@@ -223,6 +223,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     r = run.results
     print(f"task_success {r['task_success']:.3f}  tool_call_accuracy {r['tool_call_accuracy']:.3f}  "
           f"safety_pass_rate {r['safety_pass_rate']:.3f}  cost/task ${r['cost_per_task_usd']:.4f}  "
+          f"no_leak_rate {r['no_leak_rate']:.3f} ({r['data_safety'] or 'no data safety'})  "
           f"steps/task {r['steps_per_task']:.1f}  errors {r['errors']}  judged {r['judged']} "
           f"(judge ${r['judge_cost_usd']:.4f})" + (f"  UNGRADED {r['ungraded']}" if r["ungraded"] else ""))
     print(f"Wrote {results_path} and {report}. Next: aof gate evaluate {args.dir}")

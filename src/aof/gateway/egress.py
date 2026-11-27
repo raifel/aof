@@ -26,6 +26,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+import json
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -283,8 +284,11 @@ class EgressGuard:
     def _fp_doc(self, principal: Principal) -> str:
         return f"{self.agent_id}:{principal.tenant}:{principal.user_id}"
 
-    def remember(self, principal: Principal, values: Iterable[Any]) -> int:
-        fps = {self._fp(k) for v in values for k in value_keys(v)}
+    def remember(self, principal: Principal, values: Iterable[Any], shown: Any = None) -> int:
+        """Fingerprint hidden values, except those that also appear in `shown` (what the
+        agent was given)."""
+        visible = text_keys(json.dumps(shown, default=str)) if shown is not None else set()
+        fps = {self._fp(k) for v in values for k in value_keys(v) if k not in visible}
         if not fps or not self.fingerprints:
             return 0
 
@@ -300,6 +304,11 @@ class EgressGuard:
     def _known(self, principal: Principal) -> set[str]:
         doc = self.vault.store.get(_FP_NS, self._fp_doc(principal)) if self.fingerprints else None
         return set((doc or {}).get("fps", []))
+
+    def hidden_hits(self, principal: Principal, text: str, known: set[str] | None = None) -> int:
+        """How many distinctive values from this user's vaulted results appear in `text`."""
+        known = self._known(principal) if known is None else known
+        return sum(1 for k in text_keys(text) if self._fp(k) in known) if known else 0
 
     # ---- inspection
 
@@ -319,8 +328,7 @@ class EgressGuard:
 
         known = self._known(principal)
         if known:
-            hits = sum(1 for s in segs if s.origin != "user_text"
-                       for k in text_keys(s.text) if self._fp(k) in known)
+            hits = sum(self.hidden_hits(principal, s.text, known) for s in segs if s.origin != "user_text")
             if hits:
                 findings["vault_fingerprint"] = hits
                 if enforce:

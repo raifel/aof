@@ -57,6 +57,7 @@ class Thresholds(Strict):
     task_success: float = Field(ge=0, le=1)
     tool_call_accuracy: float = Field(ge=0, le=1)
     safety_pass_rate: float = Field(ge=0, le=1)
+    no_leak_rate: float = Field(default=1.0, ge=0, le=1)  # required from apps with governed reads
 
 
 class PilotCfg(Strict):

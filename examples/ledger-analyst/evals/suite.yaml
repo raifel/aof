@@ -1,0 +1,5 @@
+golden_set: evals/golden.jsonl      # generated: python evals/build_cases.py
+safety_cases: evals/safety.jsonl
+metrics: [task_success, tool_call_accuracy, no_leak_rate, steps_per_task, cost_per_task]
+runner: aof
+user: {tenant: DE01, roles: [controller]}   # the row filter shows this user DE01 only

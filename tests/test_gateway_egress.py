@@ -12,7 +12,8 @@ from aof.gateway.egress import segments, text_keys, value_keys
 from aof.gateway.llm import LlmProxy
 
 from .test_gateway_llm import FakeProvider
-from .test_gateway_vault import ALICE, MALLORY, OPEX_Q3, LedgerUpstream, app, call, make_policy  # noqa: F401
+from .test_gateway_vault import (ALICE, MALLORY, OPEX_Q3, LedgerUpstream, app, call, has_number,  # noqa: F401
+                                 make_policy)
 
 pytest.importorskip("duckdb")
 
@@ -20,11 +21,11 @@ IBAN = "DE89 3704 0044 0532 0130 00"  # valid check digits
 CARD = "4111 1111 1111 1111"          # valid Luhn
 
 
-def proxy(app, results="enforce", mode="contract", **egress):
-    policy = make_policy(app, results=results, mode=mode)
+def proxy(app, results="enforce", mode="contract", ds=None, upstream=None, **egress):
+    policy = make_policy(app, results=results, mode=mode, **(ds or {}))
     if egress:
         policy.data_safety["egress"].update(egress)
-    gw = Gateway(policy, LedgerUpstream())
+    gw = Gateway(policy, upstream or LedgerUpstream())
     return LlmProxy(gw, FakeProvider()), gw
 
 
@@ -92,7 +93,7 @@ def test_vaulted_value_in_a_tool_result_is_blocked(app):
     assert p.provider.calls == []
     rec = gw.audit.read()[-1]
     assert rec["event"] == "llm_denied" and rec["egress"] == {"vault_fingerprint": 1}
-    assert "180" not in json.dumps(rec)
+    assert not has_number(rec, "180")
 
 
 def test_vaulted_value_in_the_system_prompt_is_blocked(app):
@@ -123,6 +124,32 @@ def test_handles_and_shaped_results_pass(app):
                   {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t",
                                                 "content": json.dumps(shaped)}]}])
     assert res.status == 200
+
+
+def test_values_the_agent_was_shown_are_not_fingerprinted(app):
+    """A visible group key (here the month) is aggregate-exposed, so it is not `allowed`,
+    yet the shaped result shows it. Quoting it back is not a leak."""
+    class DateUpstream(LedgerUpstream):  # dates as plain dates, like the ledger example's server
+        async def call_tool(self, name, args, token=None):
+            res = await super().call_tool(name, args, token)
+            if isinstance(res.content, dict) and "rows" in res.content:
+                res.content["rows"] = [[v.removesuffix(" 00:00:00") if isinstance(v, str) else v for v in r]
+                                       for r in res.content["rows"]]
+            return res
+
+    p, gw = proxy(app, ds={"min_group_size": 1}, upstream=DateUpstream())  # one line per group here
+    by_month = {**OPEX_Q3, "dimensions": ["posting_date:month"],
+                "filters": [{"dimension": "company", "op": "eq", "value": "DE01"}]}
+    shaped = call(gw, "query_ledger", {"query": by_month}).content
+    month = next(r["posting_date_month"] for r in shaped["rows"] if r)  # shown to the agent
+    res = ask(p, [user("opex by month?"),
+                  {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "query_ledger",
+                                                     "input": {"query": by_month}}]},
+                  {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t",
+                                                "content": json.dumps(shaped)}]},
+                  {"role": "assistant", "content": f"The table has a row for {month}."}, user("thanks")])
+    assert res.status == 200, res.body
+    assert ask(p, [{"role": "assistant", "content": "October opex was 100.00"}, user("ok")]).status == 403  # hidden: still guarded
 
 
 # --------------------------------------------------------------------------- detectors

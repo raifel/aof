@@ -1,0 +1,27 @@
+name: budget_lines
+owner: finance-planning
+description: "Approved budget per company, cost centre, account and fiscal period"
+source: "snowflake:FINANCE.PLANNING.BUDGET_LINES"
+semantic_view: budget_lines
+freshness_sla: 24h
+classification: confidential
+fields:
+  - {name: company_code, type: string, classification: public, llm_exposure: allowed}
+  - {name: cost_centre, type: string}
+  - {name: account_code, type: string}
+  - {name: fiscal_year, type: integer, classification: public, llm_exposure: allowed}
+  - {name: fiscal_period, type: integer, classification: public, llm_exposure: allowed}
+  - {name: budget_eur, type: "number(18,2)", classification: confidential}
+quality: ["one row per company, cost centre, account and period"]
+row_filter:
+  - {column: company_code, claim: tenant}
+measures:
+  - {name: budget, field: budget_eur, agg: sum}
+dimensions:
+  - {name: company, field: company_code, required: true, description: "company code, e.g. DE01"}
+  - {name: cost_centre, field: cost_centre}
+  - {name: account, field: account_code}
+  - {name: fiscal_year, field: fiscal_year}
+  - {name: fiscal_period, field: fiscal_period}
+glossary:
+  budget: "approved budget in EUR"

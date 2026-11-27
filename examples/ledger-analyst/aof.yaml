@@ -1,0 +1,46 @@
+# Worked example for data safety (docs/data-safety.md): finance users ask questions about
+# the general ledger in plain language. The model writes a semantic query; the gateway
+# compiles and guards it, runs it through the app, and keeps the rows in the result vault.
+# The model sees column names and a row-count range, never an amount.
+aof_version: "0.1"
+
+app:
+  name: ledger-analyst
+  description: "Answers finance questions about the general ledger and budgets without the model seeing the figures"
+  owner: finance-systems
+  on_call: finance-systems-oncall
+  user_facing: true
+
+risk_tier: T2
+pattern: single_agent
+pattern_justification: >-
+  Questions vary in metric, grouping and period, and some need a clarifying question
+  (which company) before a query; a fixed chain per question type would need one
+  workflow per report.
+
+autonomy:
+  current: L1
+  target: L1
+
+hosts_agent: false
+
+mcp_server:
+  path: src/server.py
+  command: ["python", "src/server.py"]
+
+budgets:
+  max_steps_per_run: 10
+  max_cost_usd_per_run: 0.30
+
+llm:
+  models: [claude-opus-5-5]
+  max_tokens: 8000
+  rate_limit: {calls: 30, per: minute}
+  zero_data_retention: true
+
+data_safety:
+  mode: contract      # per-field exposure from the data contracts
+  results: enforce    # rows go to the vault; the model gets a handle
+
+approvals:
+  architecture_review: {by: arch-review-board, date: 2026-11-20, ref: ARCH-431}

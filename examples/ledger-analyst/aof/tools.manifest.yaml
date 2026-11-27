@@ -1,0 +1,39 @@
+server: com.example/ledger-analyst
+version: 0.1.0
+tools:
+  - name: query_ledger
+    description: >-
+      Answer a finance question with a semantic query over the general ledger (view gl_journal_lines;
+      metrics revenue, opex, personnel_cost, travel, software, rent, lines; dimensions company,
+      cost_centre, account, vendor, posting_date with :month or :quarter) or budgets (view
+      budget_lines; metric budget; dimensions company, cost_centre, account, fiscal_year,
+      fiscal_period). Returns a result handle, the columns and a row-count range; the user sees the figures.
+    example: 'query_ledger(query={"view": "gl_journal_lines", "metrics": ["opex"], "dimensions": ["cost_centre"], "filters": [{"dimension": "company", "op": "eq", "value": "DE01"}], "period": {"fiscal_year": 2026, "quarter": 3}})'
+    not_for: "Questions a semantic query can't express: use query_ledger_sql."
+    access: read
+    risk_tier: T1
+    idempotent: true
+    scopes: ["ledger:read"]
+    rate_limit: {calls: 30, per: minute}
+    approval: {mode: sampled, sample_rate: 0.05}
+    reads: ["gl_journal_lines", "budget_lines"]
+    query: {form: ir, dialect: duckdb, max_rows: 1000, timeout_seconds: 30, max_bytes_scanned: 1000000000}
+    params:
+      query: {type: object, description: "Semantic query: view, metrics, dimensions, filters, period, order_by, limit"}
+
+  - name: query_ledger_sql
+    description: >-
+      Run one read-only SQL SELECT over the views gl_journal_lines and budget_lines. The gateway
+      checks it and adds your company filter. Returns a result handle, the columns and a row-count range.
+    example: 'query_ledger_sql(query="SELECT cost_centre, SUM(amount_eur) AS opex FROM gl_journal_lines WHERE account_code BETWEEN ''6000'' AND ''7999'' GROUP BY cost_centre")'
+    not_for: "Anything query_ledger can answer: prefer the semantic query."
+    access: read
+    risk_tier: T2
+    idempotent: true
+    scopes: ["ledger:read"]
+    rate_limit: {calls: 20, per: minute}
+    approval: {mode: sampled, sample_rate: 0.2}
+    reads: ["gl_journal_lines", "budget_lines"]
+    query: {form: sql, dialect: duckdb, max_rows: 1000, timeout_seconds: 30, max_bytes_scanned: 1000000000}
+    params:
+      query: {type: string, description: "One SQL SELECT statement"}

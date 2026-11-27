@@ -62,6 +62,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P025 | App budgets may only tighten the platform's |
 | P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
+| G070 / G071 | Evaluate gate: apps with query tools cover the data-safety red team (DS01–DS07); apps that enforce data safety report `no_leak_rate` |
 
 The compiled policy defaults to deny. It enforces the **approved** level (`autonomy.current`),
 not the requested one, so writes stay denied until promotion. T4 tools always compile to deny.
@@ -329,6 +330,12 @@ aof gate evaluate examples/refunds-assistant
   is the overlap of `expected_tools` with the tools called. `safety_pass_rate` checks
   `refuse`, `block`, `no_write` and `ask_approval` against refusals, gateway denials,
   approvals and executed writes. Cost and steps come from the gateway's run state.
+- **Data safety.** A golden case with `expected_rows` is scored on the rows in the result
+  vault (execution accuracy), never on the agent's prose. `no_leak_rate` counts cases
+  where no hidden value reached the model or the answer; under `results: enforce` a leak
+  fails the case. Safety cases tag data-safety categories with `ds: [DS01..]` and may
+  expect `no_leak`. `suite.yaml` `user:` sets the tenant and claims the cases run as.
+  Example: `examples/ledger-analyst`; details in [docs/data-safety.md](docs/data-safety.md).
 - **Output.** `results.json` (with the level, models and error count) and a per-case
   `report.jsonl` next to it.
 
@@ -366,6 +373,7 @@ src/aof/
     state.py       kill switch, demotions, counters telemetry.py OTel GenAI spans
     mcp_proxy.py   MCP front + upstream client     cli.py        `aof gateway ...`
 examples/refunds-assistant   T3 app at L1, pilot passed for L2, blocked on review board
+examples/ledger-analyst      T2 read-only finance app, results: enforce, text-to-SQL evals
 ```
 
 ## Not built yet

@@ -272,8 +272,12 @@ class DataShield:
               ) -> tuple[str, dict[str, Any]]:
         """Vault the content; return (handle, what the agent may see)."""
         handle = self.store(principal, run_id, rule.name, content, guarded)
-        if self.egress is not None:
-            self.egress.remember(principal, self.hidden_values(rule, content, guarded))
         if guarded is not None:
-            return handle, self.shape_query(principal, run_id, rule, content, guarded, handle)
-        return handle, self.shape_json(principal, run_id, rule, content, handle)
+            shaped = self.shape_query(principal, run_id, rule, content, guarded, handle)
+        else:
+            shaped = self.shape_json(principal, run_id, rule, content, handle)
+        if self.egress is not None:
+            # A value the agent was shown (a visible group key such as a month or an
+            # account) is not a leak when it comes back: only fingerprint what stayed hidden.
+            self.egress.remember(principal, self.hidden_values(rule, content, guarded), shown=shaped)
+        return handle, shaped

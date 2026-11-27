@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,11 +23,15 @@ class Principal:
     # The caller's verified bearer token: the subject token for on-behalf-of exchange.
     # Never logged, compared or serialised.
     token: str | None = field(default=None, repr=False, compare=False)
+    # Verified token claims, for row filters (data_safety.row_filter_claims). Not compared.
+    claims: dict[str, Any] = field(default_factory=dict, repr=False, compare=False, hash=False)
+    client_id: str | None = field(default=None, compare=False)  # the calling OAuth client
 
     @classmethod
     def of(cls, user_id: str, scopes=(), roles=(), tenant: str | None = None,
-           token: str | None = None) -> "Principal":
-        return cls(user_id, frozenset(scopes), frozenset(roles), tenant, token)
+           token: str | None = None, claims: dict[str, Any] | None = None,
+           client_id: str | None = None) -> "Principal":
+        return cls(user_id, frozenset(scopes), frozenset(roles), tenant, token, dict(claims or {}), client_id)
 
 
 def principal_from_access_token(token) -> Principal:
@@ -38,6 +43,8 @@ def principal_from_access_token(token) -> Principal:
         roles=claims.get("roles", []),
         tenant=claims.get("tenant"),
         token=token.token,
+        claims=claims.get("token_claims") or claims,
+        client_id=token.client_id,
     )
 
 
@@ -63,5 +70,6 @@ class StaticTokenVerifier:
             client_id=entry.get("client_id", "aof-dev"),
             scopes=list(entry.get("scopes", [])),
             subject=entry["subject"],
-            claims={"roles": entry.get("roles", []), "tenant": entry.get("tenant")},
+            claims={"roles": entry.get("roles", []), "tenant": entry.get("tenant"),
+                    "token_claims": {"sub": entry["subject"], **entry.get("claims", {})}},
         )

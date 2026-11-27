@@ -109,6 +109,30 @@ def _verifier(args, policy, public_url: str):
     return verifier, issuer
 
 
+def _vault(args, policy):
+    """The result vault, or None (no data_safety in the policy), or 2 on a config error."""
+    ds = policy.data_safety
+    if not ds:
+        return None
+    from .state import DurableStore, RedisStore
+    from .vault import KEY_ENV, ResultVault, VaultError, load_key
+
+    url = args.vault_url or os.environ.get("AOF_VAULT_URL") or args.state_url
+    try:
+        key = load_key() if os.environ.get(KEY_ENV) or url else None
+    except VaultError as exc:
+        print(f"vault: {exc} (replicas must share the key to read each other's results)", file=sys.stderr)
+        return 2
+    store = RedisStore.from_url(url, prefix="aof:vault:") if url else DurableStore()
+    v = ds.get("vault") or {}
+    vault = ResultVault(store, key, ttl_seconds=int(v.get("ttl_seconds", 3600)),
+                        max_bytes=int(v.get("max_bytes_per_result", 5_000_000)))
+    where = f"shared at {url.split('@')[-1]}" if url else "in this process"
+    note = "" if key else f"; per-process key, results are lost on restart (set {KEY_ENV})"
+    print(f"data safety: results {ds.get('results')}, mode {ds.get('mode')}; vault {where}{note}", file=sys.stderr)
+    return vault
+
+
 def cmd_serve(args) -> int:
     try:
         from .mcp_proxy import McpUpstream, http_app, serve_stdio
@@ -141,8 +165,11 @@ def cmd_serve(args) -> int:
         upstream = McpUpstream(args.upstream_url, per_user=obo is not None)
     else:
         upstream = McpUpstream.stdio(command, cwd=args.cwd)
+    vault = _vault(args, policy)
+    if vault == 2:
+        return 2
     gateway = Gateway(policy, upstream, state=state, audit=audit, approvals=approvals,
-                      auto_demote=not args.no_auto_demote, obo=obo)
+                      auto_demote=not args.no_auto_demote, obo=obo, vault=vault)
     audit.append("gateway_started", agent=policy.agent.id, transport=args.transport,
                  state="shared" if args.state_url else "local",
                  autonomy_level=policy.agent.autonomy_level.value,
@@ -434,6 +461,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     s.add_argument("--issuer-url", help="http: the IdP issuer (default: platform.yaml identity.issuer)")
     s.add_argument("--audience", action="append", help="http: token audience(s) accepted (default: --public-url)")
     s.add_argument("--no-admin", action="store_true", help="http: do not serve the /admin operator API")
+    s.add_argument("--vault-url", help="Redis URL for the result vault, ideally its own ACL user "
+                                       "(default: AOF_VAULT_URL, then --state-url); needs AOF_VAULT_KEY")
     s.add_argument("--public-url", help="http: this gateway's public /mcp URL")
     s.add_argument("--no-auto-demote", action="store_true")
     s.add_argument("--replica-id", default=os.environ.get("AOF_REPLICA_ID"),

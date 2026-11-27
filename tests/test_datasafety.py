@@ -220,3 +220,21 @@ def test_platform_default_exposure_must_be_within_ceiling(platform):
     data["data_safety"]["default_exposure"]["confidential"] = "allowed"
     with pytest.raises(ValidationError):
         PlatformConfig.model_validate(data)
+
+
+def test_app_may_only_tighten_results_mode(example, platform, edit_yaml):
+    platform.data_safety.results = "shadow"
+    edit_yaml(example / "aof.yaml", lambda d: d.update(data_safety={"results": "off"}))
+    assert "AOF-P076" in _errors(example, platform)
+    edit_yaml(example / "aof.yaml", lambda d: d.update(data_safety={"results": "enforce"}))
+    assert "AOF-P076" not in _errors(example, platform)
+    lp = load_project(example)
+    assert compile_policy(lp.project, lp.manifest, platform, lp.data_contracts)["data_safety"]["results"] == "enforce"
+
+
+def test_metadata_only_clamps_result_keys_at_compile(ledger, platform, edit_yaml):
+    _edit_tool(ledger, edit_yaml, lambda t: t.update(result_keys={"status": "allowed", "ref": "token"}))
+    lp = load_project(ledger)
+    tool = next(t for t in compile_policy(lp.project, lp.manifest, platform, lp.data_contracts)["tools"]
+                if t["name"] == "query_ledger")
+    assert tool["result_keys"] == {"status": "none", "ref": "token"}

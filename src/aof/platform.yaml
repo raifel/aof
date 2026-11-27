@@ -78,6 +78,10 @@ llm:                                   # model calls through the gateway (POST /
   fast_mode_multiplier: 2.0
 
 data_safety:                           # what data may reach the model (docs/data-safety.md)
+  # enforce: vault governed results, the agent gets a handle and allowed values only
+  # shadow: vault and audit, but return results unchanged (rollout); off: no vault.
+  # Apps may only tighten (aof.yaml data_safety.results, AOF-P076).
+  results: shadow
   default_mode: metadata_only          # metadata_only | contract; used when aof.yaml sets none
   metadata_only_from_tier: T3          # apps at this tier or above must use metadata_only
   default_exposure:                    # a field's llm_exposure when the contract sets none
@@ -95,7 +99,13 @@ data_safety:                           # what data may reach the model (docs/dat
   row_filter_claims: {}                # extra row-filter claims: name -> dotted token claim path
   provider:
     zero_data_retention: required      # required | recommended | not_required
+  vault:                               # results of governed reads, kept from the model
+    ttl_seconds: 3600
+    max_bytes_per_result: 5000000
+    model_preview_rows: 20             # visible (allowed or token) rows returned to the agent
+    reader_clients: []                 # OAuth client ids (the app's UI) that may GET /results
   query:                               # ceilings for query tools (tools.manifest `query:`)
+    max_queries_per_run: 20
     max_rows_ceiling: 10000
     timeout_seconds_ceiling: 60
     max_bytes_scanned_ceiling: 50000000000

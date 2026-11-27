@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
 from ..enums import AutonomyLevel, DataSafetyMode, Pattern, RiskTier
@@ -87,6 +89,7 @@ class DataSafetyConfig(Strict):
     """What data the model may see. Unset: the platform's default_mode."""
 
     mode: DataSafetyMode | None = None
+    results: Literal["enforce", "shadow", "off"] | None = None  # may only tighten the platform's
 
 
 class A2aPeer(Strict):

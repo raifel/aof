@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import Field, NonNegativeFloat, PositiveInt, field_validator
 
-from ..enums import Access, ApprovalMode, Reversibility, RiskTier
+from ..enums import Access, ApprovalMode, Exposure, Reversibility, RiskTier
 from .base import Strict
 
 
@@ -74,6 +74,9 @@ class Tool(Strict):
     sandboxed: bool = False
     reads: list[str] = []  # semantic views / data products (must have data contracts)
     query: QueryCfg | None = None  # set for tools that run a model-written query
+    # Result keys that are not data-contract fields (status, ids): how much the model may
+    # see. Keys in neither a contract nor here are hidden (docs/data-safety.md).
+    result_keys: dict[str, Exposure] = {}
     params: dict[str, Param] = {}
 
 

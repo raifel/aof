@@ -93,6 +93,7 @@ class LlmCfg(Strict):
 
 
 class QueryLimitsCfg(Strict):
+    max_queries_per_run: PositiveInt = 20
     max_rows_ceiling: PositiveInt
     timeout_seconds_ceiling: PositiveInt
     max_bytes_scanned_ceiling: PositiveInt
@@ -103,7 +104,18 @@ class ProviderCfg(Strict):
     zero_data_retention: str = Field(default="required", pattern=r"^(required|recommended|not_required)$")
 
 
+class VaultCfg(Strict):
+    ttl_seconds: PositiveInt = 3600
+    max_bytes_per_result: PositiveInt = 5_000_000
+    model_preview_rows: int = Field(default=20, ge=0)  # visible rows the agent gets back
+    reader_clients: list[str] = []  # OAuth client ids that may read GET /results (the app's UI)
+
+
 class DataSafetyCfg(Strict):
+    # What the gateway does with results of tools that read governed data:
+    # enforce = vault them and return a handle; shadow = vault and audit, return them
+    # unchanged; off = return them unchanged.
+    results: str = Field(default="shadow", pattern=r"^(enforce|shadow|off)$")
     default_mode: DataSafetyMode = DataSafetyMode.METADATA_ONLY
     metadata_only_from_tier: RiskTier = RiskTier.T3  # apps at this tier or above must use it
     default_exposure: dict[Classification, Exposure]
@@ -112,6 +124,7 @@ class DataSafetyCfg(Strict):
     row_count_buckets: list[int] = [0, 1, 10, 100, 1000, 10000]
     row_filter_claims: dict[str, str] = {}  # name used in contracts -> dotted token claim path
     provider: ProviderCfg = ProviderCfg()
+    vault: VaultCfg = VaultCfg()
     query: QueryLimitsCfg
 
     @model_validator(mode="after")

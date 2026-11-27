@@ -7,7 +7,7 @@ compiles the first and guards both. Pure: no I/O, no warehouse drivers. Needs `s
 
 from __future__ import annotations
 
-from typing import Iterable, Literal, Mapping
+from typing import Callable, Iterable, Literal, Mapping
 
 from .guard import Claims, GuardConfig, GuardedQuery, OutputColumn, QueryRejected, guard_sql
 from ..datasafety import ColumnSchema, ViewSchema, view_from_contract, views_from_contracts
@@ -15,7 +15,9 @@ from .semantic import SemanticQuery, compile_semantic, fiscal_range, parse_query
 
 
 def prepare_query(query: str | dict, *, form: Literal["ir", "sql"], views: Mapping[str, ViewSchema],
-                  allowed_views: Iterable[str], claims: Claims, config: GuardConfig) -> GuardedQuery:
+                  allowed_views: Iterable[str], claims: Claims, config: GuardConfig,
+                  resolve_literal: Callable[[str], str | None] | None = None,
+                  count_groups: bool = False) -> GuardedQuery:
     """Compile (IR) and guard a model-written query. Raises `QueryRejected` with a stable code."""
     allowed = [v.lower() for v in allowed_views]
     if form == "ir":
@@ -29,7 +31,8 @@ def prepare_query(query: str | dict, *, form: Literal["ir", "sql"], views: Mappi
         if not isinstance(query, str):
             raise QueryRejected("QUERY_INVALID", "form sql needs the query as a string")
         sql = query
-    return guard_sql(sql, views=views, allowed_views=allowed, claims=claims, config=config)
+    return guard_sql(sql, views=views, allowed_views=allowed, claims=claims, config=config,
+                     resolve_literal=resolve_literal, count_groups=count_groups)
 
 
 __all__ = [

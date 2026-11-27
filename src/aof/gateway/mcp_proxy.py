@@ -187,6 +187,10 @@ def http_app(gateway: Gateway, upstream: McpUpstream, token_verifier, *, issuer_
         from .admin import admin_routes
 
         routes.extend(admin_routes(gateway, token_verifier))
+    if gateway.vault is not None:
+        from .results_api import results_routes
+
+        routes.extend(results_routes(gateway, token_verifier))
     server = build_server(gateway, token_principal)
     app = server.streamable_http_app(
         host=host,

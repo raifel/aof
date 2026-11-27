@@ -40,7 +40,8 @@ class ToolRule(_M):
     approver_role: str | None = None
     dry_run_preview: bool = False
     reversibility: str | None = None
-    query: dict[str, Any] | None = None  # query tool settings (docs/data-safety.md); enforced from D2
+    query: dict[str, Any] | None = None  # query tool settings (docs/data-safety.md)
+    result_keys: dict[str, str] = {}  # non-contract result keys -> exposure
 
 
 class AgentInfo(_M):
@@ -129,8 +130,7 @@ class CompiledPolicy(_M):
     llm: LlmRule | None = None
     a2a: A2aRule = A2aRule()
     identity: IdentityRule = IdentityRule()
-    # Field exposures, view schemas and query settings. The query guard (`aof.query`) reads
-    # `views` through `aof.datasafety.ViewSchema`; the gateway enforces it from D2.
+    # Field exposures, view schemas, query and vault settings; enforced by `shield.DataShield`.
     data_safety: dict[str, Any] | None = None
 
     def rule(self, tool: str) -> ToolRule | None:

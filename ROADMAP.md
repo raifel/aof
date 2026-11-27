@@ -69,8 +69,10 @@ and [docs/deployment.md](docs/deployment.md). Ordered by risk.
 Plan: [docs/data-safety.md](docs/data-safety.md). Business data stays out of the model
 (result vault, handles, tokenised ids, egress guard), and text-to-SQL for accounting runs
 behind a gateway-side SQL guard. Phases D1–D7 and open decisions DS1–DS7 are tracked there.
-D1 (schema and rules) and D4 (query IR and SQL guard) are done. D2 (result vault and wiring
-the guard into the gateway) is next; until then nothing is enforced at run time.
+D1 (schema and rules), D2 (result vault and gateway wiring) and D4 (query IR and SQL
+guard) are done. The platform default is `results: shadow`; turning on `enforce` is a
+platform decision (DS8 first: agents that must see values). D3 (egress guard on
+`/v1/messages`) is next.
 
 ## 5. Known limits to revisit later
 

@@ -24,7 +24,7 @@ order leaks it), and a raw `aggregate` column is hidden unless the query aggrega
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import sqlglot
 from sqlglot import exp
@@ -69,6 +69,7 @@ class GuardedQuery:
     columns: tuple[OutputColumn, ...]
     aggregated: bool  # the outer query aggregates (GROUP BY or aggregate functions)
     max_rows: int
+    group_rows_column: str | None = None  # added COUNT(*) per group, for min_group_size
 
 
 Claims = Mapping[str, "str | Sequence[str]"]
@@ -95,10 +96,24 @@ class _Info:
 _OPEN = _Info(Exposure.ALLOWED, True)
 
 
+GROUP_ROWS = "aof_group_rows"
+
+
 def guard_sql(sql: str, *, views: Mapping[str, ViewSchema], allowed_views: Iterable[str],
-              claims: Claims, config: GuardConfig) -> GuardedQuery:
+              claims: Claims, config: GuardConfig,
+              resolve_literal: Callable[[str], str | None] | None = None,
+              count_groups: bool = False) -> GuardedQuery:
+    """`resolve_literal` maps a string literal to its real value (gateway tokens) on the
+    syntax tree, so a value can never change the query's structure. `count_groups` adds
+    COUNT(*) per group to an aggregated query, so small groups can be suppressed."""
     allowed = {v.lower() for v in allowed_views}
     stmt = _parse_one(sql, config.dialect)
+    if resolve_literal is not None:
+        for lit in list(stmt.find_all(exp.Literal)):
+            if lit.is_string:
+                real = resolve_literal(lit.this)
+                if real is not None:
+                    lit.replace(exp.convert(real))
     _check_structure(stmt, allowed, {v.lower() for v in views})
     _check_functions(stmt, config.allowed_functions)
 
@@ -115,6 +130,12 @@ def guard_sql(sql: str, *, views: Mapping[str, ViewSchema], allowed_views: Itera
         analysis.visit(scope)
     outputs = analysis.outputs(stmt)
     aggregated = _is_aggregated(_first_select(stmt))
+    group_col = None
+    if count_groups and aggregated and isinstance(stmt, exp.Select):
+        if any(n == GROUP_ROWS for n, _ in outputs):
+            raise QueryRejected("SQL_CONSTRUCT_NOT_ALLOWED", f"{GROUP_ROWS} is a reserved column name")
+        stmt.append("expressions", exp.alias_(exp.Count(this=exp.Star()), GROUP_ROWS))
+        group_col = GROUP_ROWS
 
     used = _apply_row_filters(stmt, views, claims, config.dialect)
     _apply_limit(stmt, config.max_rows)
@@ -124,6 +145,7 @@ def guard_sql(sql: str, *, views: Mapping[str, ViewSchema], allowed_views: Itera
         columns=tuple(OutputColumn(n, i.exposure) for n, i in outputs),
         aggregated=aggregated,
         max_rows=config.max_rows,
+        group_rows_column=group_col,
     )
 
 

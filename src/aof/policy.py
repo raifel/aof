@@ -20,6 +20,7 @@ from .enums import (
     ApprovalMode,
     AutonomyLevel,
     DataSafetyMode,
+    Exposure,
     READ_ONLY_LEVELS,
     Reversibility,
     RiskTier,
@@ -190,6 +191,14 @@ def data_safety_mode(project: Project, platform: PlatformConfig) -> DataSafetyMo
     return project.data_safety.mode or platform.data_safety.default_mode
 
 
+_RESULTS_RANK = {"off": 0, "shadow": 1, "enforce": 2}
+
+
+def data_safety_results(project: Project, platform: PlatformConfig) -> str:
+    app, plat = project.data_safety.results, platform.data_safety.results
+    return app if app and _RESULTS_RANK[app] > _RESULTS_RANK[plat] else plat
+
+
 def _check_data_safety(project: Project, manifest: ToolManifest, platform: PlatformConfig) -> list[Finding]:
     ds, out = platform.data_safety, []
     if project.risk_tier >= ds.metadata_only_from_tier and data_safety_mode(project, platform) is not DataSafetyMode.METADATA_ONLY:
@@ -199,6 +208,11 @@ def _check_data_safety(project: Project, manifest: ToolManifest, platform: Platf
     if project.llm is not None and ds.provider.zero_data_retention == "required" and not project.llm.zero_data_retention:
         out.append(error("AOF-P073", "aof.yaml", "the platform requires zero data retention with the model provider",
                          "confirm the provider account's terms, then set llm.zero_data_retention: true"))
+    app_results = project.data_safety.results
+    if app_results and _RESULTS_RANK[app_results] < _RESULTS_RANK[ds.results]:
+        out.append(error("AOF-P076", "aof.yaml",
+                         f"data_safety.results {app_results} is weaker than the platform's {ds.results}",
+                         "apps may only tighten: off < shadow < enforce"))
     lim = ds.query
     for t in manifest.tools:
         q = t.query
@@ -229,6 +243,9 @@ def _compile_data_safety(project: Project, manifest: ToolManifest, platform: Pla
     views = views_from_contracts(contracts, ds.default_exposure, mode)
     return {
         "mode": mode.value,
+        "results": data_safety_results(project, platform),
+        "vault": ds.vault.model_dump(),
+        "max_queries_per_run": ds.query.max_queries_per_run,
         "views": {name: v.model_dump(mode="json", exclude_defaults=True) for name, v in views.items()},
         "min_group_size": ds.min_group_size,
         "row_count_buckets": ds.row_count_buckets,
@@ -347,6 +364,11 @@ def compile_policy(project: Project, manifest: ToolManifest, platform: PlatformC
             entry["sandbox"] = True
         if t.query:
             entry["query"] = t.query.model_dump()
+        if t.result_keys:
+            strict = data_safety_mode(project, platform) is DataSafetyMode.METADATA_ONLY
+            entry["result_keys"] = {  # metadata_only clamps these like contract fields
+                k: (v if not strict or v is Exposure.TOKEN else Exposure.NONE).value
+                for k, v in t.result_keys.items()}
         tools.append(entry)
 
     return {

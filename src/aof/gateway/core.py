@@ -18,8 +18,10 @@ from .compiled import CompiledPolicy
 from .engine import Action, PolicyEngine, Verdict, effective_decision, effective_level
 from .identity import Principal
 from .obo import OboBroker, TokenExchangeError
+from .shield import HIDDEN_ERROR, DataShield
 from .state import GatewayState
 from .telemetry import tool_span
+from .vault import ResultVault, VaultError
 
 
 @dataclass
@@ -55,7 +57,8 @@ def _deny_payload(v: Verdict) -> dict[str, Any]:
 class Gateway:
     def __init__(self, policy: CompiledPolicy, upstream: Upstream, *, state: GatewayState | None = None,
                  audit: AuditLog | None = None, approvals: ApprovalService | None = None,
-                 auto_demote: bool = True, clock=time.time, obo: OboBroker | None = None):
+                 auto_demote: bool = True, clock=time.time, obo: OboBroker | None = None,
+                 vault: ResultVault | None = None):
         self.policy = policy
         self.upstream = upstream
         self.state = state or GatewayState()
@@ -65,6 +68,13 @@ class Gateway:
         self.auto_demote = auto_demote
         self.clock = clock
         self.obo = obo  # on-behalf-of token exchange towards the upstream app
+        ds = policy.data_safety or {}
+        if vault is None and ds:
+            v = ds.get("vault") or {}
+            vault = ResultVault(ttl_seconds=int(v.get("ttl_seconds", 3600)),
+                                max_bytes=int(v.get("max_bytes_per_result", 5_000_000)), clock=clock)
+        self.vault = vault
+        self.shield = DataShield(policy, vault) if vault is not None else None
 
     @property
     def agent_id(self) -> str:
@@ -152,31 +162,82 @@ class Gateway:
 
             return await self._execute(principal, tool, args, verdict, base, span, now)
 
+    def _prepare(self, principal, rule, args, base, span):
+        """Upstream args (tokens resolved, query guarded), or a refusal ToolResult."""
+        if self.shield is None:
+            return args, None, None
+        from ..query import QueryRejected
+
+        try:
+            prepared = self.shield.prepare(principal, rule, args, base["run_id"], self.state.run(base["run_id"]))
+        except QueryRejected as exc:
+            span.set_error(exc.code)
+            self.audit.append("query_rejected", **base, code=exc.code)  # no reason: it can quote the query
+            return None, None, ToolResult({"error": exc.code, "reason": exc.message}, is_error=True)
+        if prepared.guarded is not None:
+            g = prepared.guarded
+            self.audit.append("query_guarded", **base, views=list(g.views), columns=len(g.columns),
+                              aggregated=g.aggregated, max_rows=g.max_rows,
+                              sql_sha256=args_digest({"sql": g.sql}))
+        return prepared.args, prepared.guarded, None
+
+    def _shape(self, principal, rule, result: ToolResult, guarded, base, span
+               ) -> tuple[ToolResult, dict[str, Any]]:
+        """Vault a governed result. Returns what the agent may see and fields for the audit
+        record (handle, row bucket, hidden keys: metadata, never values)."""
+        shield = self.shield
+        if shield is None or not shield.governed(rule):
+            return result, {}
+        if result.is_error:
+            return (ToolResult(dict(HIDDEN_ERROR), is_error=True), {"result": "error_hidden"}) if rule.query \
+                else (result, {})
+        try:
+            handle, shaped = shield.shape(principal, base["run_id"], rule, result.content, guarded)
+        except VaultError as exc:
+            span.set_error(exc.code)
+            return ToolResult({"error": exc.code, "reason": str(exc)}, is_error=True), {"result": exc.code}
+        span.set_attribute("aof.result_handle", handle)
+        fields = {"result_handle": handle, "result": shield.results, "row_count": shaped.get("row_count"),
+                  "hidden_keys": shaped.get("hidden_keys"), "rows_shown": shaped.get("rows_shown", 0)}
+        return (result if shield.results == "shadow" else ToolResult(shaped)), fields
+
     async def _request_approval(self, principal, tool, args, run_id, verdict, base, span, now) -> ToolResult:
         rule = verdict.rule
         preview = None
-        if rule.dry_run_preview:
+        agent_preview = None
+        preview_fields: dict[str, Any] = {}
+        up_args, guarded, refused = self._prepare(principal, rule, args, base, span)
+        if refused is not None:
+            return refused
+        if guarded is not None:
+            # Approvers see the guarded SQL; the agent doesn't (tokens are resolved in it).
+            preview = {"sql": guarded.sql, "views": list(guarded.views)}
+            agent_preview = {"query": "checked by the gateway; the approver sees the SQL"}
+        elif rule.dry_run_preview:
             try:
                 kw, _ = await self._credential(principal, rule.scopes)
             except TokenExchangeError as exc:
                 return self._exchange_failed(exc, base, span)
-            dry = await self.upstream.call_tool(tool, {**args, "dry_run": True}, **kw)
+            dry = await self.upstream.call_tool(tool, {**up_args, "dry_run": True}, **kw)
             if dry.is_error:
                 self.audit.append("dry_run_failed", **base)
                 return ToolResult({"error": "DRY_RUN_FAILED", "reason": "the preview failed; fix the call first",
                                    "upstream": dry.content}, is_error=True)
             preview = dry.content
+            shaped, preview_fields = self._shape(principal, rule, dry, None, base, span)
+            agent_preview = shaped.content
         approval = self.approvals.request(agent_id=self.agent_id, tool=tool, principal=principal, run_id=run_id,
                                           args=args, preview=preview, approver_role=rule.approver_role, now=now)
         span.set_attribute("aof.approval_id", approval.id)
         self.audit.append("approval_requested", **base, approval_id=approval.id, code=verdict.code,
-                          reason=verdict.reason, approver_role=rule.approver_role)
+                          reason=verdict.reason, approver_role=rule.approver_role,
+                          **{f"preview_{k}": v for k, v in preview_fields.items()})
         return ToolResult({
             "status": "approval_required",
             "approval_id": approval.id,
             "reason": verdict.reason,
             "approver_role": rule.approver_role,
-            "preview": preview,
+            "preview": agent_preview,
             "expires_at": approval.expires_at,
             "next": f"Tell the user it awaits approval. After approval, repeat the same call with "
                     f"{APPROVAL_ARG}='{approval.id}'. Do not change the arguments.",
@@ -193,6 +254,9 @@ class Gateway:
             self.state.writes.add(key, now, 3600)  # the engine already took a slot for within-limits writes
         if approval_id and verdict.rule.dry_run_preview:
             args = {**args, "dry_run": False}  # the approved action itself, not another preview
+        args, guarded, refused = self._prepare(principal, verdict.rule, args, base, span)
+        if refused is not None:
+            return refused
         try:
             result = await self.upstream.call_tool(tool, args, **kw)
         except Exception as exc:  # noqa: BLE001 - upstream failure is reported, never raised to the agent
@@ -202,10 +266,11 @@ class Gateway:
                               is_error=True)
         if result.is_error:
             span.set_error("TOOL_ERROR")
+        shown, vault_fields = self._shape(principal, verdict.rule, result, guarded, base, span)
         self.audit.append("tool_executed", **base, code=verdict.code, upstream_error=result.is_error,
                           sampled_for_review=verdict.sampled, approval_id=approval_id, approved_by=approved_by,
-                          on_behalf_of=credential)
-        return result
+                          on_behalf_of=credential, **vault_fields)
+        return shown
 
     async def _credential(self, principal: Principal, scopes) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Upstream call kwargs and an audit summary. Raises TokenExchangeError."""

@@ -60,7 +60,7 @@ Gates are stateless. Each run re-reads the artefacts, and sign-offs live in vers
 | P021 / P022 | L0–L1 targets have no write tools; at L2 every write is `per_action` |
 | P023 | L4 requires an A2A agent card |
 | P025 | App budgets may only tighten the platform's |
-| P070–P075 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only` |
+| P070–P076 | Query tools: read only, declared limits within platform ceilings, raw SQL in T3 apps per action; zero data retention confirmed; T3+ apps use `metadata_only`; apps may only tighten the results mode |
 | C070–C077 | Data contracts: field exposure within ceilings, PII at most a token, free text hidden, row filters on user-facing query views, semantic model matches fields |
 
 The compiled policy defaults to deny. It enforces the **approved** level (`autonomy.current`),
@@ -251,6 +251,20 @@ Streaming is passed through. Cost is computed from `usage` x the prices in
 `platform.yaml` (unknown models are charged at the highest listed price) and is added to
 the same per-run budget as tool calls. The audit log records token counts and cost, never
 prompt or response content. `--no-llm` turns the endpoint off.
+
+### Data safety (results kept from the model)
+
+When the compiled policy has a `data_safety` section, results of tools that read governed
+data (`reads` or a `query:` block) go into an encrypted result vault at the gateway. The
+agent gets a `result_handle` and only the values the data contracts allow
+(`allowed`, tokens for ids, masked values). The app's UI reads the rows from
+`GET /results/{handle}`, and only clients listed in `data_safety.vault.reader_clients` may,
+so the agent can't, even with the user's token. Query tools are compiled and guarded
+before they run (`aof.query`): read-only, allowed views and columns, row filters from the
+token, row and query limits, no filters on hidden values. The platform default is
+`results: shadow` (vault and audit, return unchanged); set `enforce` to hide results.
+Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives restarts and is shared by
+replicas. Details and limits: [docs/data-safety.md](docs/data-safety.md).
 
 ### Agent-to-agent calls (A2A)
 

@@ -1,8 +1,10 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1 and D4 built** (contract rules, the query compiler and the SQL guard). D2, D3 and
-D5–D7 are not built yet, so the gateway does not enforce any of this at run time. Written
-2026-11-27 against commit `7accedb`.
+Status: **D1, D2 and D4 built**: contract rules, the result vault with the gateway wiring,
+and the query compiler with the SQL guard. The platform default is `results: shadow`:
+governed results are vaulted and audited but still returned to the agent. Set `enforce`
+in `platform.yaml` or an app's `aof.yaml` to keep them from the model. D3 (egress guard)
+and D5–D7 are not built. Written 2026-11-27 against commit `7accedb`.
 
 Two goals for every onboarded app:
 
@@ -63,6 +65,58 @@ flowchart LR
 - Identifiers the agent needs to pass between tools (customer id, invoice number) are
   **tokenised**: the model sees `tok_c_8f3a`, and the gateway swaps it back for the real
   value in the arguments of the next upstream call, for the same user and run only.
+
+### As built (D2)
+
+Code: `gateway/vault.py` (vault and tokens), `gateway/shield.py` (before and after each
+call), `gateway/results_api.py` (`GET /results/{handle}`), wired in `core.py`.
+
+**Which calls.** Every call to a tool with `query:` or `reads` is governed. Query tools
+are guarded whenever the policy has a `data_safety` section, whatever the results mode.
+
+**Before the call.** Tokens anywhere in the arguments are replaced by their values (same
+user, tenant and run; unknown tokens stay as they are). For a query tool, the run's query
+budget is reserved (`max_queries_per_run`, atomic), the query is compiled and guarded,
+and the guarded SQL replaces the query argument. **The app's server always receives SQL**
+in the query parameter, for `ir` and `sql` alike, and must apply the tool's declared
+timeout and scan limits. Tokens inside SQL string literals are resolved on the syntax
+tree, so a value can't change the query. A refused query never reaches the app; the audit
+records `query_rejected` with the code only (the reason can quote the query).
+
+**After the call.** The result is sealed in the vault (AES-GCM, bound to user and tenant,
+`ttl_seconds`), and the agent gets back:
+
+- query tools: `result_handle`, `columns` with their exposure, `row_count` as a bucket,
+  and up to `model_preview_rows` rows holding only visible values. The guard adds
+  `COUNT(*) AS aof_group_rows` to aggregated queries; `aggregate` values in a group below
+  `min_group_size` are left out (`suppressed_small_groups`).
+- other governed tools (JSON results): `result_handle`, `result` with only the keys the
+  model may see, and `hidden_keys`. A key's exposure comes from the contract field of the
+  same name in a view the tool reads. Otherwise it comes from the tool's new
+  `result_keys` in the manifest. **Keys declared in neither are hidden.**
+  `metadata_only` clamps `result_keys` too, so they can't be used to get around it.
+- a failed query: `QUERY_FAILED` with a generic reason, never the warehouse's message.
+  Errors from other tools pass through (they are written by the app).
+- approval previews: approvers get the real dry-run preview (or the guarded SQL for a
+  query tool); the agent gets the shaped preview.
+
+The decision record (`tool_executed`) carries `result_handle`, the mode, the row bucket
+and the hidden key names, never values.
+
+**Reading results.** `GET /results/{handle}` needs a verified token whose user and tenant
+own the result, **and** a calling OAuth client listed in `vault.reader_clients`. The agent
+holds the user's token too, so the client check is what keeps it out. List the app's UI
+clients there, never the agent's. Reads and refusals are audited.
+
+**Keys and storage.** `AOF_VAULT_KEY` (32 bytes, base64). Without it, a single gateway
+uses a per-process key and loses results on restart. A gateway with shared state refuses
+to start without a key, because replicas must read each other's results. The vault uses
+its own Redis prefix (`aof:vault:`), and `--vault-url` / `AOF_VAULT_URL` can point it at a
+separate Redis ACL user.
+
+**Rollout.** `data_safety.results` is `off`, `shadow` or `enforce`. Apps may only tighten
+it (AOF-P076). Shadow mode tells you, from the audit log, which keys and columns each tool
+would hide, before anything changes for the agent.
 
 ## Exposure modes
 
@@ -292,11 +346,12 @@ Follows the conventions in `AGENTS.md`.
 | SQL guard | `query/guard.py` (pure; `sqlglot` in the `query` and `gateway` extras) | built |
 | Semantic IR and compiler, fiscal calendar | `query/semantic.py` (pure) | built |
 | `prepare_query`: compile, then guard | `query/__init__.py` | built |
-| Vault | new `gateway/vault.py` behind a `VaultStore` protocol (memory, Redis); values encrypted at rest (AES-GCM, key from env); separate Redis key prefix and ACL user from `state.py` | D2 |
-| Wiring: `prepare_query` before upstream, vault after | `core.py` | D2 |
-| Handles and tokens in MCP results | `mcp_proxy.py` | D2 |
+| Vault and tokens on the existing `Store` protocol (memory, Redis), AES-GCM, own prefix | `gateway/vault.py` | built |
+| Before/after each governed call: detokenize, guard, query budget, vault, shape | `gateway/shield.py`, wired in `core.py` | built |
+| `GET /results/{handle}` (reader clients only) | `gateway/results_api.py`, mounted in `mcp_proxy.http_app` | built |
+| `result_keys` on a tool; `data_safety.results` and `vault` settings; AOF-P076 | `models/manifest.py`, `models/project.py`, `platform.yaml`, `policy.py` | built |
 | Egress guard | `llm.py` | D3 |
-| `GET /results/{handle}`, `POST /render` | `mcp_proxy.http_app` | D2, D6 |
+| `POST /render` (fill answer templates) | `mcp_proxy.http_app` | D6 |
 | Scoring from vault and audit | `evalrun.py` | D5 |
 
 ### Finding codes (built)
@@ -317,6 +372,7 @@ Follows the conventions in `AGENTS.md`.
 | AOF-P073 | The platform requires zero data retention and the app's `llm:` block doesn't confirm it |
 | AOF-P074 | An app at or above `metadata_only_from_tier` must use `metadata_only` |
 | AOF-P075 | A query limit exceeds the platform ceiling |
+| AOF-P076 | An app's `data_safety.results` is weaker than the platform's (off < shadow < enforce) |
 | AOF-G070 | Evaluate gate: the safety suite covers the data-safety red-team categories (D5, not built) |
 
 ## Evals
@@ -348,15 +404,15 @@ fixture-measured results.
 | # | Step | Size | Depends on |
 |---|------|------|------------|
 | D1 | Contract and manifest schema (`llm_exposure`, `row_filter`, `query`, measures, glossary), `platform.yaml` `data_safety`, rules C070–C077, P070–P075, template update | small | **done** |
-| D2 | Result vault, handles, `GET /results/{handle}`, tokenisation and detokenisation of ids in arguments; dry-run previews vaulted too (L4) | medium | D1 |
+| D2 | Result vault, handles, `GET /results/{handle}`, tokenisation and detokenisation of ids in arguments, query budget, generic query errors; dry-run previews shaped for the agent | medium | **done** |
 | D3 | Egress guard on `/v1/messages`: fingerprints, pattern detectors, redact or block | medium | D2 |
 | D4 | `aof/query`: semantic IR, compiler, SQL guard with row-filter injection (query budget moves to D2, where run state is) | medium | **done** |
 | D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | D2, D4 |
 | D6 | Template render endpoint and a reference UI snippet; inference-attack signal in the dashboard | small | D2, ROADMAP 3.1 |
 | D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
 
-D2 is what actually delivers goal 1; D4 and D5 deliver goal 2. D2 is next: until it lands, nothing
-at run time calls `prepare_query` or keeps results from the model.
+D2 delivers goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2. D3 is next: until it
+lands, values the user pastes into a prompt, or that an agent copies there, still reach the model.
 
 ## Open decisions
 
@@ -369,13 +425,19 @@ at run time calls `prepare_query` or keeps results from the model.
 | DS5 | Do aggregates over `k` rows count as "not reaching the model"? | yes for `internal`, no for `confidential`; set by the platform team |
 | DS6 | Provider controls: zero data retention, region | required for any app with `confidential` contracts; confirm with Anthropic account terms |
 | DS7 | Which warehouse dialect first (contracts say Snowflake) | Snowflake, with DuckDB for tests |
+| DS8 | Agents that must reason about values (a refunds agent deciding on order status) vs `metadata_only`, which P074 forces on T3 apps | open: `enforce` with `metadata_only` makes such agents blind. Options: allow `contract` mode for T3 with per-field review board sign-off; or move the decision into a deterministic tool that returns only a verdict; or keep these apps on `shadow` |
 
 ## Not covered
 
 - **Execution errors are a side channel.** `SELECT 1 / (amount_eur - 100)` fails only if
   some amount is exactly 100. The guard allows arithmetic on hidden columns in outputs,
-  because those outputs are hidden. D2 must return a generic error to the model for a
-  failed execution, never the warehouse's message.
+  because those outputs are hidden. D2 returns a generic `QUERY_FAILED`, but whether a
+  query fails is still one bit; the query budget limits how many bits a run can get.
+- **Approval previews are stored unencrypted** in the approval record in the gateway
+  state (as before D2), because approvers must read them. Protect the state store
+  accordingly (ROADMAP 4.7).
+- **Tokens are per run.** A token from an earlier run (an old conversation turn with a new
+  run id) doesn't resolve; the agent has to look the record up again.
 
 - The model still sees the user's question and the schema. If those are sensitive in
   themselves (for example, a table named after an unannounced acquisition), only an

@@ -173,6 +173,7 @@ class JwtVerifier:
                 "roles": _strings(_claim(claims, self.roles_claim)),
                 "tenant": _claim(claims, self.tenant_claim),
                 "iss": claims.get("iss"),
+                "token_claims": claims,  # all verified claims, for data_safety.row_filter_claims
             },
         )
 

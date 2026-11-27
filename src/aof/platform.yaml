@@ -119,6 +119,7 @@ data_safety:                           # what data may reach the model (docs/dat
   max_verdict_values: 8                # most values an enum verdict may declare (tools.manifest `verdicts:`)
   query:                               # ceilings for query tools (tools.manifest `query:`)
     max_queries_per_run: 20
+    probe_threshold: 5                 # audit query_probe_suspected at this many same-shape queries per run
     max_rows_ceiling: 10000
     timeout_seconds_ceiling: 60
     max_bytes_scanned_ceiling: 50000000000

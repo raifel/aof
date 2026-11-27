@@ -403,3 +403,14 @@ def _apply_limit(stmt: exp.Expression, max_rows: int) -> None:
         if isinstance(value, exp.Literal) and value.is_int:
             n = min(int(value.this), max_rows)
     stmt.set("limit", exp.Limit(expression=exp.Literal.number(n)))
+
+
+def shape_digest(sql: str, dialect: str | None = None) -> str:
+    """The query with every literal replaced: equal for queries that differ only by
+    constants, the pattern of a bisection on a hidden value (docs/data-safety.md)."""
+    import hashlib
+
+    tree = sqlglot.parse_one(sql, read=dialect)
+    for lit in list(tree.find_all(exp.Literal)):
+        lit.replace(exp.Placeholder())
+    return hashlib.sha256(tree.sql(dialect=dialect).encode()).hexdigest()[:16]

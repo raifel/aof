@@ -95,6 +95,9 @@ class LlmCfg(Strict):
 
 class QueryLimitsCfg(Strict):
     max_queries_per_run: PositiveInt = 20
+    # Audit query_probe_suspected when a run sends this many queries that differ only by
+    # constants (a bisection on a hidden value looks like that). A signal, not a block.
+    probe_threshold: int = Field(default=5, ge=2)
     max_rows_ceiling: PositiveInt
     timeout_seconds_ceiling: PositiveInt
     max_bytes_scanned_ceiling: PositiveInt

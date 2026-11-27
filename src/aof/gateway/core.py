@@ -194,7 +194,20 @@ class Gateway:
             self.audit.append("query_guarded", **base, views=list(g.views), columns=len(g.columns),
                               aggregated=g.aggregated, max_rows=g.max_rows,
                               sql_sha256=args_digest({"sql": g.sql}))
+            self._probe_signal(rule, g, base, span)
         return prepared.args, prepared.guarded, None
+
+    def _probe_signal(self, rule, guarded, base, span) -> None:
+        """Audit once per run and query shape when queries differ only by constants."""
+        from ..query.guard import shape_digest
+
+        threshold = (self.policy.data_safety or {}).get("probe_threshold", 5)
+        shape = shape_digest(guarded.sql, (rule.query or {}).get("dialect"))
+        count = int(self.state.run(base["run_id"]).add(f"query_shape:{shape}"))
+        if count == threshold:
+            span.set_attribute("aof.query_probe", shape)
+            self.audit.append("query_probe_suspected", **base, views=list(guarded.views), query_shape=shape,
+                              queries=count)
 
     def _shape(self, principal, rule, result: ToolResult, guarded, base, span
                ) -> tuple[ToolResult, dict[str, Any]]:

@@ -273,7 +273,10 @@ e-mail addresses and phone numbers into tokens; blocks card numbers
 decisions a tool declares under `verdicts:`, shown in every mode) and passes values on as
 **references** (`"amount": "{{res_<id>.amount}}"`, resolved by the gateway before the
 policy, so limits and approvers see the real number); the review board can open single
-fields with signed `data_safety.exceptions`. Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives
+fields with signed `data_safety.exceptions`. The agent writes figures in its answer as
+placeholders (`{{res_<id>.opex | money:EUR}}`); the UI fills them in with
+`POST /render`, with the same access rules as `GET /results`. Queries that differ only by
+constants raise a `query_probe_suspected` audit event. Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives
 restarts and is shared by replicas. Details and limits: [docs/data-safety.md](docs/data-safety.md).
 
 ### Agent-to-agent calls (A2A)

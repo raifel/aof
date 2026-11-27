@@ -1,12 +1,13 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1–D5 and DS8 built**: contract rules, the result vault with the gateway wiring,
+Status: **D1–D6 and DS8 built**: contract rules, the result vault with the gateway wiring,
 the query compiler with the SQL guard, the egress guard on model requests, the
 `ledger-analyst` example with execution-accuracy and no-leak evals, and verdicts, value
-references and signed exceptions for agents that must decide on hidden values. The platform default is `results: shadow`:
+references and signed exceptions for agents that must decide on hidden values, and
+answer templates rendered for the user (`POST /render`) with template-fidelity evals. The platform default is `results: shadow`:
 governed results are vaulted and audited but still returned to the agent. Set `enforce`
 in `platform.yaml` or an app's `aof.yaml` to keep them from the model; the egress guard
-follows the same mode. D6 and D7 are not built. Written 2026-11-27 against commit `7accedb`.
+follows the same mode. D7 is not built. Written 2026-11-27 against commit `7accedb`.
 
 Two goals for every onboarded app:
 
@@ -119,6 +120,36 @@ separate Redis ACL user.
 **Rollout.** `data_safety.results` is `off`, `shadow` or `enforce`. Apps may only tighten
 it (AOF-P076). Shadow mode tells you, from the audit log, which keys and columns each tool
 would hide, before anything changes for the agent.
+
+### Answer templates (D6, as built)
+
+The agent answers in placeholders; the user's UI fills them in. Same paths as value
+references, plus a filter:
+
+```text
+Q3 opex was {{res_8f3a….opex | money:EUR}}; CC20 spent {{res_8f3a….rows[1].opex | money}}.
+```
+
+Filters: `money[:CUR]`, `number[:digits]`, `int`, `pct[:digits]` (a fraction), `date`.
+`POST /render` with `{"template": …}` returns `{"text", "references", "missing"}`. It has
+the same rules as `GET /results`: the user's token from a client in `reader_clients`, only
+that user's results. A placeholder that can't be filled (another user's handle, a wrong
+path, a bad filter) renders as `[unavailable]` and never as a value. The audit records
+`answer_rendered` with the handles and counts. A UI shows the agent's answer like this:
+
+```js
+// final = the agent's JSON answer; token = the user's access token from the app's UI client
+const r = await fetch(`${gateway}/render`, {method: "POST", headers: {
+  authorization: `Bearer ${token}`, "content-type": "application/json"},
+  body: JSON.stringify({template: final.summary})});
+const {text, missing} = await r.json();          // figures filled from the vault
+const table = final.result?.result_handle &&     // the full table behind the answer
+  await (await fetch(`${gateway}/results/${final.result.result_handle}`,
+                     {headers: {authorization: `Bearer ${token}`}})).json();
+```
+
+Shaped results tell the agent how to write placeholders and references (`next`), and the
+reference agent in `aof eval` gets the same instructions when the app enforces data safety.
 
 ## Exposure modes
 
@@ -408,8 +439,12 @@ A model that only sees row counts can still learn values by bisection:
 - Aggregates below `min_group_size` are suppressed (D2).
 - A per-run **query budget** in the run state (`RunState.reserve`, atomic like the other
   budgets), plus a per-user query-rate window.
-- An audit signal: many queries on the same view whose predicates differ only by a
-  constant. Goes into the AgentOps dashboard (ROADMAP 3.1).
+- **Built (D6):** an audit signal. When a run sends `probe_threshold` (5) queries whose
+  SQL is the same once every literal is replaced, the gateway audits
+  `query_probe_suspected` once, with the views and a shape hash, never the constants. It
+  doesn't block: "opex for Q1, Q2, Q3, Q4, then the year" looks the same. `aof eval`
+  counts these signals (`probe_signals`). The AgentOps dashboard (ROADMAP 3.1) should
+  chart them.
 
 ## Where the code goes
 
@@ -432,7 +467,7 @@ Follows the conventions in `AGENTS.md`.
 | `GET /results/{handle}` (reader clients only) | `gateway/results_api.py`, mounted in `mcp_proxy.http_app` | built |
 | `result_keys` on a tool; `data_safety.results` and `vault` settings; AOF-P076 | `models/manifest.py`, `models/project.py`, `platform.yaml`, `policy.py` | built |
 | Egress guard: fingerprints, detectors, non-text content | `gateway/egress.py`, called from `llm.py`; fingerprints written by `shield.py` | built |
-| `POST /render` (fill answer templates) | `mcp_proxy.http_app` | D6 |
+| `POST /render` (fill answer templates); `render.py` | `gateway/results_api.py`, mounted in `mcp_proxy.http_app` | built |
 | Scoring from vault and audit: execution accuracy, no-leak rate | `evalrun.py` | built |
 
 ### Finding codes (built)
@@ -483,8 +518,11 @@ gateway's record and the vault, never from the agent's claims. As built (D5):
   injection through the question, sensitive data in the prompt, instructions to copy
   hidden values out. The new expectation `no_leak` passes when no write ran and nothing
   leaked. An app with query tools must cover all seven.
-- **Not built: template fidelity** (every number in the answer comes from a placeholder)
-  needs the render endpoint (D6).
+- **Template fidelity (D6).** Under `results: enforce`, a golden case whose agent got a
+  vaulted result passes only if the answer writes figures as placeholders and every
+  placeholder fills. A literal figure (a decimal, a percentage or 100 and above, other than
+  a year or a number from the question) fails the case: the agent couldn't have seen it.
+  Reported as `template_fidelity`.
 
 Building D5 found a false positive in the D3 egress guard: a group key with `aggregate`
 exposure (a month, an account) is shown to the agent once its group is big enough, yet
@@ -521,12 +559,13 @@ from the original sketch are left for later.
 | D3 | Egress guard on `/v1/messages`: fingerprints, pattern detectors, redact or block, non-text content | medium | **done** |
 | D4 | `aof/query`: semantic IR, compiler, SQL guard with row-filter injection (query budget moves to D2, where run state is) | medium | **done** |
 | D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | **done** |
-| D6 | Template render endpoint and a reference UI snippet; inference-attack signal in the dashboard | small | D2, ROADMAP 3.1 |
+| D6 | Template render endpoint and a reference UI snippet; template fidelity; inference-attack signal (audit; dashboard chart waits for ROADMAP 3.1) | small | **done** |
 | D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
 
 D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2, and D5
-measures both. DS8 removes the blocker for `enforce` on value-reasoning apps. Next: D6
-(render endpoint, template fidelity) and D7, and a billed `aof eval` under `enforce`.
+measures both. DS8 removes the blocker for `enforce` on value-reasoning apps, and D6
+shows the user the figures the model never saw. Next: D7, and a billed `aof eval` under
+`enforce`.
 
 ## Open decisions
 

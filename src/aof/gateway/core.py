@@ -17,6 +17,7 @@ from .audit import AuditLog, args_digest
 from .compiled import CompiledPolicy
 from .engine import Action, PolicyEngine, Verdict, effective_decision, effective_level
 from .identity import Principal
+from .egress import EgressGuard
 from .obo import OboBroker, TokenExchangeError
 from .shield import HIDDEN_ERROR, DataShield
 from .state import GatewayState
@@ -75,6 +76,10 @@ class Gateway:
                                 max_bytes=int(v.get("max_bytes_per_result", 5_000_000)), clock=clock)
         self.vault = vault
         self.shield = DataShield(policy, vault) if vault is not None else None
+        # Checks model requests (llm.py); the shield feeds it fingerprints of hidden values.
+        self.egress = EgressGuard(ds, vault, policy.agent.id) if vault is not None else None
+        if self.shield is not None:
+            self.shield.egress = self.egress
 
     @property
     def agent_id(self) -> str:

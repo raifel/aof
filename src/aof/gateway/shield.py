@@ -95,6 +95,7 @@ class DataShield:
         self.functions = list(ds.get("allowed_functions", []))
         self.max_queries = int(ds.get("max_queries_per_run", 20))
         self.preview_rows = int((ds.get("vault") or {}).get("model_preview_rows", 20))
+        self.egress = None  # set by the gateway: remembers hidden values for the egress guard
 
     def governed(self, rule: ToolRule) -> bool:
         return self.enabled and self.results != "off" and bool(rule.query or rule.reads)
@@ -237,10 +238,42 @@ class DataShield:
         return self.vault.put(principal, agent_id=self.policy.agent.id, run_id=run_id, tool=tool,
                               content=content, meta=meta)
 
+    def hidden_values(self, rule: ToolRule, content: Any, guarded=None) -> list[Any]:
+        """Raw values the agent is not shown as they are (everything but `allowed`)."""
+        out: list[Any] = []
+        if guarded is not None:
+            rows = rows_of(content)
+            if rows is None:
+                return out
+            exposures = {c.name: c.exposure for c in guarded.columns}
+            for row in rows:
+                for k, v in row.items():
+                    if exposures.get(str(k).lower()) is not Exposure.ALLOWED:
+                        out.append(v)
+            return out
+        exposures = self._exposures(rule)
+
+        def walk(value: Any, key: str | None) -> None:
+            if key is not None and exposures.get(key.lower()) is Exposure.ALLOWED:
+                return
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    walk(v, k)
+            elif isinstance(value, list):
+                for v in value:
+                    walk(v, key)
+            else:
+                out.append(value)
+
+        walk(content, None)
+        return out
+
     def shape(self, principal: Principal, run_id: str, rule: ToolRule, content: Any, guarded=None
               ) -> tuple[str, dict[str, Any]]:
         """Vault the content; return (handle, what the agent may see)."""
         handle = self.store(principal, run_id, rule.name, content, guarded)
+        if self.egress is not None:
+            self.egress.remember(principal, self.hidden_values(rule, content, guarded))
         if guarded is not None:
             return handle, self.shape_query(principal, run_id, rule, content, guarded, handle)
         return handle, self.shape_json(principal, run_id, rule, content, handle)

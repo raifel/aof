@@ -104,6 +104,16 @@ data_safety:                           # what data may reach the model (docs/dat
     max_bytes_per_result: 5000000
     model_preview_rows: 20             # visible (allowed or token) rows returned to the agent
     reader_clients: []                 # OAuth client ids (the app's UI) that may GET /results
+  egress:                              # checks on POST /v1/messages before it leaves (D3)
+    detectors:                         # block | redact (to a vault token) | off
+      iban: redact
+      card_number: block
+      email: redact
+      phone: redact
+    custom_patterns: {}                # name: {regex: "...", action: block|redact}
+    non_text: block                    # images and documents cannot be checked: block | allow
+    fingerprints: true                 # block requests that carry values from vaulted results
+    max_fingerprints_per_user: 20000
   query:                               # ceilings for query tools (tools.manifest `query:`)
     max_queries_per_run: 20
     max_rows_ceiling: 10000

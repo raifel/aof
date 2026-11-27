@@ -1,10 +1,10 @@
 # Data safety and natural-language queries (plan)
 
-Status: **D1, D2 and D4 built**: contract rules, the result vault with the gateway wiring,
-and the query compiler with the SQL guard. The platform default is `results: shadow`:
+Status: **D1–D4 built**: contract rules, the result vault with the gateway wiring, the
+query compiler with the SQL guard, and the egress guard on model requests. The platform default is `results: shadow`:
 governed results are vaulted and audited but still returned to the agent. Set `enforce`
-in `platform.yaml` or an app's `aof.yaml` to keep them from the model. D3 (egress guard)
-and D5–D7 are not built. Written 2026-11-27 against commit `7accedb`.
+in `platform.yaml` or an app's `aof.yaml` to keep them from the model; the egress guard
+follows the same mode. D5–D7 are not built. Written 2026-11-27 against commit `7accedb`.
 
 Two goals for every onboarded app:
 
@@ -295,20 +295,37 @@ semantic model marks which dimensions need a stated value (`required_filters`).
 
 The vault keeps tool results away from the model, but values can still arrive through the
 user's prompt (L2), retrieved documents (L3) or an agent that copies data around. The LLM
-proxy gets a guard before `messages.create`:
+proxy runs `gateway/egress.py` after its policy checks and before any budget is reserved,
+so a refused request costs nothing. Built in D3:
 
-1. **Vault fingerprints.** When rows are vaulted, the gateway keeps keyed hashes (HMAC) of
-   every `none` and `token` value for the run. Before a model call, it hashes the tokens of
-   the outgoing messages and looks for matches. A match means vaulted data is about to reach
-   the model → `DATA_EGRESS_BLOCKED`. This catches an agent that fetched a handle's rows
-   some other way and pasted them into the prompt.
-2. **Pattern detectors** for data that should never go to the provider: IBAN, card numbers
-   (Luhn), national ids, tax ids, emails, phone numbers. Per platform policy: `redact`
-   (replace with a token and continue) or `block`.
-3. **Pluggable classifier hook** (ROADMAP 4.10). An optional external DLP service, called
-   with a timeout. It fails closed for T3 apps.
+1. **Vault fingerprints.** When the shield vaults a result, it records keyed hashes (HMAC
+   under a key derived from `AOF_VAULT_KEY`) of every *distinctive* value the agent wasn't
+   shown as is, per agent, tenant and user, for `vault.ttl_seconds`. Distinctive means
+   numbers written with a decimal point (`180.00`), numbers of 1000 or more that aren't
+   plausible years, and strings of six or more characters. Before a model call, numbers,
+   ids and 2–4 word phrases in the system prompt, assistant turns, tool inputs and tool
+   results are hashed and compared. A match → `DATA_EGRESS_BLOCKED`. **Text the user typed
+   is not compared**, because users may name values they know. Keying by user rather than
+   run means mismatched run ids between `/mcp` and `/v1/messages` don't weaken the check.
+2. **Pattern detectors** on all text, the user's included: `iban` (mod-97 checked),
+   `card_number` (Luhn checked), `email`, `phone` (international format with `+`), and
+   platform `custom_patterns` (national ids, internal formats). Each is `redact`, `block`
+   (`SENSITIVE_DATA_BLOCKED`) or `off`. Redact replaces the match with a vault token, so
+   the agent can still pass it to a tool, which gets the real value (same user and run).
+   Defaults: card numbers block; the rest redact.
+3. **Content the guard can't read.** Images and documents are blocked by default
+   (`NON_TEXT_BLOCKED`); set `egress.non_text: allow` to let them through, unchecked.
+4. **Never altered:** `thinking` and `redacted_thinking` blocks, which the provider signs.
 
-The audit log records which detector fired and how many matches, never the matched text.
+`shadow` mode audits findings without changing or blocking anything; `off` skips the
+guard. The `llm_call` and `llm_denied` records carry `egress: {detector: count}`, never
+the matched text. Config: `data_safety.egress` in `platform.yaml`.
+
+**Limits.** This is a tripwire, not a proof. A value the agent rewords ("one hundred and
+eighty euros") or splits passes. Short values (`DE01`, `180`) aren't fingerprinted, so
+they can't be caught. An assistant turn that repeats something the user typed can be
+blocked if the same distinctive value was also in a hidden result. The external
+classifier hook (ROADMAP 4.10) is not built.
 
 ## Inference attacks
 
@@ -350,7 +367,7 @@ Follows the conventions in `AGENTS.md`.
 | Before/after each governed call: detokenize, guard, query budget, vault, shape | `gateway/shield.py`, wired in `core.py` | built |
 | `GET /results/{handle}` (reader clients only) | `gateway/results_api.py`, mounted in `mcp_proxy.http_app` | built |
 | `result_keys` on a tool; `data_safety.results` and `vault` settings; AOF-P076 | `models/manifest.py`, `models/project.py`, `platform.yaml`, `policy.py` | built |
-| Egress guard | `llm.py` | D3 |
+| Egress guard: fingerprints, detectors, non-text content | `gateway/egress.py`, called from `llm.py`; fingerprints written by `shield.py` | built |
 | `POST /render` (fill answer templates) | `mcp_proxy.http_app` | D6 |
 | Scoring from vault and audit | `evalrun.py` | D5 |
 
@@ -405,14 +422,14 @@ fixture-measured results.
 |---|------|------|------------|
 | D1 | Contract and manifest schema (`llm_exposure`, `row_filter`, `query`, measures, glossary), `platform.yaml` `data_safety`, rules C070–C077, P070–P075, template update | small | **done** |
 | D2 | Result vault, handles, `GET /results/{handle}`, tokenisation and detokenisation of ids in arguments, query budget, generic query errors; dry-run previews shaped for the agent | medium | **done** |
-| D3 | Egress guard on `/v1/messages`: fingerprints, pattern detectors, redact or block | medium | D2 |
+| D3 | Egress guard on `/v1/messages`: fingerprints, pattern detectors, redact or block, non-text content | medium | **done** |
 | D4 | `aof/query`: semantic IR, compiler, SQL guard with row-filter injection (query budget moves to D2, where run state is) | medium | **done** |
 | D5 | `examples/ledger-analyst` with the DuckDB fixture; golden and safety cases; execution accuracy and no-leak scoring in `evalrun.py` | medium | D2, D4 |
 | D6 | Template render endpoint and a reference UI snippet; inference-attack signal in the dashboard | small | D2, ROADMAP 3.1 |
 | D7 | A2A replies and eval judge inputs through the same exposure rules (L5, L6) | small | D2 |
 
-D2 delivers goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2. D3 is next: until it
-lands, values the user pastes into a prompt, or that an agent copies there, still reach the model.
+D2 and D3 deliver goal 1 once `results: enforce` is set; D4 and D5 deliver goal 2. D5 (example
+ledger app, evals with no-leak scoring) is next.
 
 ## Open decisions
 

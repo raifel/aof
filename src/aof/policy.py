@@ -245,6 +245,7 @@ def _compile_data_safety(project: Project, manifest: ToolManifest, platform: Pla
         "mode": mode.value,
         "results": data_safety_results(project, platform),
         "vault": ds.vault.model_dump(),
+        "egress": ds.egress.model_dump(),
         "max_queries_per_run": ds.query.max_queries_per_run,
         "views": {name: v.model_dump(mode="json", exclude_defaults=True) for name, v in views.items()},
         "min_group_size": ds.min_group_size,

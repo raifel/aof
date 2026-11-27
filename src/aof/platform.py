@@ -111,6 +111,37 @@ class VaultCfg(Strict):
     reader_clients: list[str] = []  # OAuth client ids that may read GET /results (the app's UI)
 
 
+class CustomPatternCfg(Strict):
+    regex: str
+    action: str = Field(default="block", pattern=r"^(block|redact|off)$")
+
+
+class EgressCfg(Strict):
+    """Checks on model requests (POST /v1/messages) before they leave for the provider."""
+
+    detectors: dict[str, str] = {"iban": "redact", "card_number": "block", "email": "redact", "phone": "redact"}
+    custom_patterns: dict[str, CustomPatternCfg] = {}  # e.g. national ids, internal account formats
+    non_text: str = Field(default="block", pattern=r"^(block|allow)$")  # images, documents
+    fingerprints: bool = True  # block requests carrying values from vaulted results
+    max_fingerprints_per_user: PositiveInt = 20000
+
+    @model_validator(mode="after")
+    def _known(self) -> "EgressCfg":
+        bad = {k for k in self.detectors if k not in ("iban", "card_number", "email", "phone")}
+        if bad:
+            raise ValueError(f"unknown egress detectors {sorted(bad)}; add them as custom_patterns")
+        bad_actions = {v for v in self.detectors.values() if v not in ("block", "redact", "off")}
+        if bad_actions:
+            raise ValueError(f"egress detector actions are block, redact or off, not {sorted(bad_actions)}")
+        import re
+        for name, spec in self.custom_patterns.items():
+            try:
+                re.compile(spec.regex)
+            except re.error as exc:
+                raise ValueError(f"egress.custom_patterns.{name}: {exc}") from None
+        return self
+
+
 class DataSafetyCfg(Strict):
     # What the gateway does with results of tools that read governed data:
     # enforce = vault them and return a handle; shadow = vault and audit, return them
@@ -125,6 +156,7 @@ class DataSafetyCfg(Strict):
     row_filter_claims: dict[str, str] = {}  # name used in contracts -> dotted token claim path
     provider: ProviderCfg = ProviderCfg()
     vault: VaultCfg = VaultCfg()
+    egress: EgressCfg = EgressCfg()
     query: QueryLimitsCfg
 
     @model_validator(mode="after")

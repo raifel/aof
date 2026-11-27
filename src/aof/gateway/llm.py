@@ -9,8 +9,9 @@ writes the call to the audit log (token counts and cost, never content).
 Checks, in order (first failure wins):
   kill switch . LLM enabled . model allowlist . max_tokens cap . beta allowlist .
   fallbacks stay inside the allowlist . no MCP connector . declared tools are in
-  the policy . server tools allow-listed . model-call / cost / depth budgets .
-  per-user rate limit
+  the policy . server tools allow-listed . egress guard (data safety: vaulted values,
+  sensitive patterns, unreadable content; see egress.py) . model-call / cost / depth
+  budgets . per-user rate limit
 
 Budget checks run before the call, so one call can take a run past its cost cap.
 """
@@ -177,7 +178,7 @@ class LlmProxy:
     # ------------------------------------------------------------------ checks
 
     def _check(self, principal: Principal, params: dict[str, Any], betas: list[str], run, now: float,
-               depth: int) -> str:
+               depth: int, extra: dict[str, Any] | None = None) -> str:
         gw, rule = self.gw, self.rule
         killed = gw.state.killed(gw.agent_id)
         if killed:
@@ -228,6 +229,19 @@ class LlmProxy:
             elif name not in rule.allowed_server_tools:
                 raise LlmDenied(403, "SERVER_TOOL_NOT_ALLOWED", f"server tool {name or tool.get('type')} is not allowed")
 
+        egress = gw.egress
+        if egress is not None and egress.active:  # before budgets: a refused request costs nothing
+            checked = egress.inspect(principal, run.run_id, params)
+            if extra is not None and checked.findings:
+                extra["egress"] = checked.findings
+            if checked.blocked:
+                code, message = checked.blocked
+                raise LlmDenied(403, code, message)
+            if checked.params is not params:
+                params["messages"] = checked.params.get("messages")
+                if "system" in checked.params:
+                    params["system"] = checked.params["system"]
+
         b = gw.policy.budgets
         if run.cost_usd >= b.max_cost_usd_per_run:
             raise LlmDenied(403, "COST_BUDGET",
@@ -262,14 +276,16 @@ class LlmProxy:
         now = gw.clock()
         run = gw.state.run(run_id, now)
         base = {"agent": gw.agent_id, "user": principal.user_id, "run_id": run_id, "stream": stream}
+        extra: dict[str, Any] = {}  # egress findings: detector names and counts, never text
         try:
-            model = self._check(principal, params, betas, run, now, delegation_depth)
+            model = self._check(principal, params, betas, run, now, delegation_depth, extra)
         except LlmDenied as d:
-            gw.audit.append("llm_denied", **base, model=params.get("model"), code=d.code, reason=str(d))
+            gw.audit.append("llm_denied", **base, **extra, model=params.get("model"), code=d.code, reason=str(d))
             if d.violation:
                 gw.record_violation(now)
             return LlmResponse(d.status, error_body(d.status, d.code, str(d)), headers=d.headers)
 
+        base.update(extra)  # lands on the llm_call record
         if stream:
             return LlmResponse(200, events=self._stream(params, betas, model, run, base),
                                headers={"cache-control": "no-cache"})

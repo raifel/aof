@@ -238,3 +238,15 @@ def test_metadata_only_clamps_result_keys_at_compile(ledger, platform, edit_yaml
     tool = next(t for t in compile_policy(lp.project, lp.manifest, platform, lp.data_contracts)["tools"]
                 if t["name"] == "query_ledger")
     assert tool["result_keys"] == {"status": "none", "ref": "token"}
+
+
+@pytest.mark.parametrize("egress", [
+    {"detectors": {"passport": "block"}},                       # unknown built-in
+    {"detectors": {"iban": "mask"}},                            # unknown action
+    {"custom_patterns": {"bad": {"regex": "(unclosed"}}},       # invalid regex
+])
+def test_platform_egress_config_is_validated(platform, egress):
+    data = platform.model_dump(mode="json")
+    data["data_safety"]["egress"].update(egress)
+    with pytest.raises(ValidationError):
+        PlatformConfig.model_validate(data)

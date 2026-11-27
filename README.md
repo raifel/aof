@@ -263,8 +263,12 @@ so the agent can't, even with the user's token. Query tools are compiled and gua
 before they run (`aof.query`): read-only, allowed views and columns, row filters from the
 token, row and query limits, no filters on hidden values. The platform default is
 `results: shadow` (vault and audit, return unchanged); set `enforce` to hide results.
-Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives restarts and is shared by
-replicas. Details and limits: [docs/data-safety.md](docs/data-safety.md).
+Model requests to `/v1/messages` pass an egress guard in the same mode. It blocks
+requests that carry values from vaulted results (`DATA_EGRESS_BLOCKED`); redacts IBANs,
+e-mail addresses and phone numbers into tokens; blocks card numbers
+(`SENSITIVE_DATA_BLOCKED`); and blocks images and documents it can't check
+(`NON_TEXT_BLOCKED`). Set `AOF_VAULT_KEY` (32 bytes, base64) for a key that survives
+restarts and is shared by replicas. Details and limits: [docs/data-safety.md](docs/data-safety.md).
 
 ### Agent-to-agent calls (A2A)
 
